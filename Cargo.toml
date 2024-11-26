@@ -1,0 +1,7 @@
+[package]
+name = "mcp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+mcp_gen = { git = "https://github.com/EmilLindfors/mcp_gen.git", branch = "main" }
