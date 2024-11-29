@@ -1,10 +1,10 @@
 use clap::Parser;
 use config::{Config, Environment, File};
-use mcp::error::McpError;
+use mcp_rs::error::McpError;
 use std::path::PathBuf;
 
-use mcp::server::McpServer;
-use mcp::server::config::{ServerConfig, TransportType};
+use mcp_rs::server::McpServer;
+use mcp_rs::server::config::{ServerConfig, TransportType};
 
 // CLI Arguments
 #[derive(Parser, Debug)]
