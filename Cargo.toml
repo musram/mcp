@@ -1,5 +1,5 @@
 [package]
-name = "mcp"
+name = "mcp_rs"
 description = "a library for making MCP (Model Context Protocol) compatible programs with rust"
 version = "0.1.0"
 edition = "2021"
