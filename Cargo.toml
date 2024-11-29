@@ -4,7 +4,7 @@ description = "a library for making MCP (Model Context Protocol) compatible prog
 version = "0.1.0"
 edition = "2021"
 authors = ["Emil Lindfors <[email protected]>"]
-keywords = ["gen", "anthropic", "mcp protocol"]
+keywords = ["gen", "anthropic", "model_context_protocol", "mcp"]
 categories = ["API bindings"]
 license = "MIT"
 
