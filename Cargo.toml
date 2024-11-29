@@ -28,6 +28,8 @@ mime_guess = "2.0.5"
 tracing-subscriber = { version ="0.3.18", features = ["env-filter"]}
 config = "0.14.1"
 clap = { version = "4.5.21", features = ["derive"] }
+reqwest = { version = "0.12.9", features = ["json"]}
+reqwest-eventsource = "0.6.0"
 
 [[bin]]
 name = "server"

@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Duration};
 use config::ServerConfig;
 use tracing::info;
 
-use crate::{error::McpError, protocol::{Protocol, ProtocolOptions}, resource::{ListResourcesRequest, ReadResourceRequest, ResourceCapabilities, ResourceManager}, transport::{SseTransport, StdioTransport}};
+use crate::{error::McpError, protocol::{Protocol, ProtocolOptions, ProtocolBuilder}, resource::{ListResourcesRequest, ReadResourceRequest, ResourceCapabilities, ResourceManager}, transport::{SseTransport, StdioTransport}};
 
 pub mod config;
 
@@ -25,16 +25,14 @@ impl McpServer {
         }
     }
 
-    pub async fn run_stdio_transport(&self) -> Result<(), McpError> {
-        info!("Starting stdio transport");
-        
+    async fn run_stdio_transport(&self) -> Result<(), McpError> {
         let transport = StdioTransport::new(self.config.server.max_connections);
-        let mut protocol = Protocol::new(Some(ProtocolOptions {
+        let protocol = Protocol::builder(Some(ProtocolOptions {
             enforce_strict_capabilities: true,
         }));
 
-        // Register resource handlers
-        self.register_resource_handlers(&mut protocol).await?;
+        // Register resource handlers and build protocol
+        let mut protocol = self.register_resource_handlers(protocol).build();
         
         // Connect transport
         protocol.connect(transport).await?;
@@ -45,19 +43,17 @@ impl McpServer {
         }
     }
 
-    pub async fn run_sse_transport(&self) -> Result<(), McpError> {
-        info!("Starting SSE transport on {}:{}", self.config.server.host, self.config.server.port);
-        
+    async fn run_sse_transport(&self) -> Result<(), McpError> {
         let transport = SseTransport::new(
             self.config.server.port,
             self.config.server.max_connections,
         );
-        let mut protocol = Protocol::new(Some(ProtocolOptions {
+        let protocol = Protocol::builder(Some(ProtocolOptions {
             enforce_strict_capabilities: true,
         }));
 
-        // Register resource handlers
-        self.register_resource_handlers(&mut protocol).await?;
+        // Register resource handlers and build protocol
+        let mut protocol = self.register_resource_handlers(protocol).build();
         
         // Connect transport
         protocol.connect(transport).await?;
@@ -68,61 +64,64 @@ impl McpServer {
         }
     }
 
-    pub async fn register_resource_handlers(&self, protocol: &mut Protocol) -> Result<(), McpError> {
-        let resource_manager = self.resource_manager.clone();
+    fn register_resource_handlers(&self, builder: ProtocolBuilder) -> ProtocolBuilder {
+        // Add this line to store a cloned reference
+        let resource_manager = Arc::clone(&self.resource_manager);
 
-        // List resources handler
-        protocol.set_request_handler(
-            "resources/list",
-            Box::new(move |request, _extra| {
-                let rm = resource_manager.clone();
-                Box::pin(async move {
-                    let params: ListResourcesRequest = if let Some(params) = request.params {
-                        serde_json::from_value(params).unwrap()
-                    } else {
-                        ListResourcesRequest { cursor: None }
-                    };
-                    
-                    rm.list_resources(params.cursor).await
-                        .map(|response| serde_json::to_value(response).unwrap())
-                        .map_err(|e| e.into())
+        let builder = builder
+            .with_request_handler(
+                "resources/list",
+                Box::new(move |request, _extra| {
+                    let rm = Arc::clone(&resource_manager);
+                    Box::pin(async move {
+                        let params: ListResourcesRequest = if let Some(params) = request.params {
+                            serde_json::from_value(params).unwrap()
+                        } else {
+                            ListResourcesRequest { cursor: None }
+                        };
+                        
+                        rm.list_resources(params.cursor).await
+                            .map(|response| serde_json::to_value(response).unwrap())
+                            .map_err(|e| e.into())
+                    })
                 })
-            }),
-        );
-        let resource_manager = self.resource_manager.clone();
-        // Read resource handler
-        protocol.set_request_handler(
-            "resources/read",
-            Box::new(move |request, _extra| {
-                let rm = resource_manager.clone();
-                Box::pin(async move {
-                    let params: ReadResourceRequest = serde_json::from_value(request.params.unwrap()).unwrap();
-                    rm.read_resource(&params.uri).await
-                        .map(|response| serde_json::to_value(response).unwrap())
-                        .map_err(|e| e.into())
+            );
+
+        let resource_manager = Arc::clone(&self.resource_manager);
+        let builder = builder
+            .with_request_handler(
+                "resources/read",
+                Box::new(move |request, _extra| {
+                    let rm = Arc::clone(&resource_manager);
+                    Box::pin(async move {
+                        let params: ReadResourceRequest = serde_json::from_value(request.params.unwrap()).unwrap();
+                        rm.read_resource(&params.uri).await
+                            .map(|response| serde_json::to_value(response).unwrap())
+                            .map_err(|e| e.into())
+                    })
                 })
-            }),
-        );
-        let resource_manager = self.resource_manager.clone();
-        // List templates handler
-        protocol.set_request_handler(
-            "resources/templates/list",
-            Box::new(move |_request, _extra| {
-                let rm = resource_manager.clone();
-                Box::pin(async move {
-                    rm.list_templates().await
-                        .map(|response| serde_json::to_value(response).unwrap())
-                        .map_err(|e| e.into())
+            );
+
+        let resource_manager = Arc::clone(&self.resource_manager);
+        let builder = builder
+            .with_request_handler(
+                "resources/templates/list",
+                Box::new(move |_request, _extra| {
+                    let rm = Arc::clone(&resource_manager);
+                    Box::pin(async move {
+                        rm.list_templates().await
+                            .map(|response| serde_json::to_value(response).unwrap())
+                            .map_err(|e| e.into())
+                    })
                 })
-            }),
-        );
-        let resource_manager = self.resource_manager.clone();
-        // Subscribe handler
+            );
+        
         if self.resource_manager.capabilities.subscribe {
-            protocol.set_request_handler(
+            let resource_manager = Arc::clone(&self.resource_manager);
+            let builder = builder.with_request_handler(
                 "resources/subscribe",
                 Box::new(move |request, _extra| {
-                    let rm = resource_manager.clone();
+                    let rm = Arc::clone(&resource_manager);
                     Box::pin(async move {
                         let params = serde_json::from_value(request.params.unwrap()).unwrap();
                         rm.subscribe(request.id.to_string(), params).await
@@ -130,23 +129,27 @@ impl McpServer {
                     })
                 }),
             );
+            builder
+        } else {
+            builder
         }
-
-        Ok(())
     }
 
-    pub async fn run(&mut self)  -> Result<(), McpError> {
+    pub async fn run(&mut self) -> Result<(), McpError> {
+        // Set up logging first if needed
+        
         match &self.config.server.transport {
             config::TransportType::Stdio => {
+                info!("Starting server with STDIO transport");
                 self.run_stdio_transport().await
             },
-            config::TransportType::Sse =>  {
+            config::TransportType::Sse => {
+                info!("Starting server with SSE transport");
                 self.run_sse_transport().await
-            }
+            },
             config::TransportType::WebSocket => {
-                unimplemented!()
+                unimplemented!("WebSocket transport not implemented")
             }
-
         }
     }
 }

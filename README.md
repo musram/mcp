@@ -2,6 +2,27 @@
 
 A Rust implementation of the Model Context Protocol (MCP), providing a standardized way for AI models to access external context and resources.
 
+## Quickstart 
+
+For sse transport:
+```rust
+# Terminal 1 - Start server
+cargo run --bin server -- -t sse -p 3000
+
+# Terminal 2 - Run test client
+cargo test test_sse_client -- --nocapture
+```
+
+For STDIO transport:
+```rust
+# Terminal 1 - Start server
+cargo run --bin server -- -t stdio
+
+# Terminal 2 - Run CLI client
+cargo run --example cli_client
+```
+
+
 ## Overview
 
 mcp.rs is a high-performance, type-safe Rust implementation of the Model Context Protocol, designed to enable seamless communication between AI applications and their integrations. It provides a robust foundation for building MCP servers that can expose various types of resources (files, data, APIs) to AI models.

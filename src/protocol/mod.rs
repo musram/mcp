@@ -82,24 +82,79 @@ type NotificationHandler =
 type ResponseHandler = Box<dyn FnOnce(Result<JsonRpcResponse, McpError>) + Send + Sync>;
 type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
 
-impl Protocol {
+// Add new builder struct
+pub struct ProtocolBuilder {
+    options: ProtocolOptions,
+    request_handlers: HashMap<String, RequestHandler>,
+    notification_handlers: HashMap<String, NotificationHandler>,
+}
+
+impl ProtocolBuilder {
     pub fn new(options: Option<ProtocolOptions>) -> Self {
-        let options = options.unwrap_or_default();
-        
-        let mut protocol = Self {
+        Self {
+            options: options.unwrap_or_default(),
+            request_handlers: HashMap::new(),
+            notification_handlers: HashMap::new(),
+        }
+    }
+
+    pub fn with_request_handler(mut self, method: &str, handler: RequestHandler) -> Self {
+        self.request_handlers.insert(method.to_string(), handler);
+        self
+    }
+
+    pub fn with_notification_handler(mut self, method: &str, handler: NotificationHandler) -> Self {
+        self.notification_handlers.insert(method.to_string(), handler);
+        self
+    }
+
+    fn register_default_handlers(mut self) -> Self {
+        // Add default handlers
+        self = self.with_notification_handler(
+            "cancelled",
+            Box::new(|notification| {
+                Box::pin(async move {
+                    let params = notification.params
+                        .ok_or(McpError::InvalidParams)?;
+                    
+                    let cancelled: CancelledNotification = serde_json::from_value(params)
+                        .map_err(|_| McpError::InvalidParams)?;
+
+                    tracing::debug!(
+                        "Request {} cancelled: {}",
+                        cancelled.request_id,
+                        cancelled.reason
+                    );
+                    
+                    Ok(())
+                })
+            })
+        );
+
+        // Add other default handlers similarly...
+        self
+    }
+
+    pub fn build(self) -> Protocol {
+        let mut protocol = Protocol {
             cmd_tx: None,
             event_rx: None,
-            options,
+            options: self.options,
             request_message_id: Arc::new(RwLock::new(0)),
-            request_handlers: Arc::new(RwLock::new(HashMap::new())),
-            notification_handlers: Arc::new(RwLock::new(HashMap::new())),
+            request_handlers: Arc::new(RwLock::new(self.request_handlers)),
+            notification_handlers: Arc::new(RwLock::new(self.notification_handlers)),
             response_handlers: Arc::new(RwLock::new(HashMap::new())),
             progress_handlers: Arc::new(RwLock::new(HashMap::new())),
             request_abort_controllers: Arc::new(RwLock::new(HashMap::new())),
         };
 
-        protocol.register_default_handlers();
         protocol
+    }
+}
+
+impl Protocol {
+    pub fn builder(options: Option<ProtocolOptions>) -> ProtocolBuilder {
+        ProtocolBuilder::new(options).register_default_handlers()
     }
 
     pub async fn connect<T: Transport>(&mut self, mut transport: T) -> Result<(), McpError> {
@@ -243,12 +298,14 @@ impl Protocol {
 
         // Setup timeout
         let timeout = options.timeout.unwrap_or(Duration::from_millis(DEFAULT_REQUEST_TIMEOUT_MS));
+        
+        let timeout_fut = tokio::time::sleep(timeout);
+        tokio::pin!(timeout_fut);
 
-        tokio::select! {
+        let result = tokio::select! {
             response = rx => {
                 match response {
                     Ok(Ok(response)) => {
-                        self.progress_handlers.write().await.remove(&message_id);
                         serde_json::from_value(response.result.unwrap_or_default())
                             .map_err(|_| McpError::InvalidParams)
                     }
@@ -256,11 +313,15 @@ impl Protocol {
                     Err(_) => Err(McpError::InternalError),
                 }
             }
-            _ = tokio::time::sleep(timeout) => {
-                self.progress_handlers.write().await.remove(&message_id);
+            _ = timeout_fut => {
                 Err(McpError::RequestTimeout)
             }
-        }
+        };
+
+        // Cleanup progress handler
+        self.progress_handlers.write().await.remove(&message_id);
+        
+        result
     }
 
     pub async fn notification<N: Serialize>(
@@ -294,7 +355,7 @@ impl Protocol {
         Ok(())
     }
 
-    pub fn set_request_handler(
+    pub async fn set_request_handler(
         &mut self,
         method: &str,
         handler: RequestHandler,
@@ -303,124 +364,21 @@ impl Protocol {
             .expect("Invalid request handler capability");
             
         self.request_handlers
-            .blocking_write()
+            .write()
+            .await
             .insert(method.to_string(), handler);
     }
 
-    pub fn set_notification_handler(
+    pub async fn set_notification_handler(
         &mut self,
         method: &str,
         handler: NotificationHandler,
     ) {
         self.notification_handlers
-            .blocking_write()
+            .write()
+            .await
             .insert(method.to_string(), handler);
     }
-
-    fn register_default_handlers(&mut self) {
-        // Handle cancellation notifications
-        self.set_notification_handler(
-            "cancelled",
-            Box::new(|notification| {
-                Box::pin(async move {
-                    let params = notification.params
-                        .ok_or(McpError::InvalidParams)?;
-                    
-                    let cancelled: CancelledNotification = serde_json::from_value(params)
-                        .map_err(|_| McpError::InvalidParams)?;
-
-                    // The cancelled notification contains:
-                    // - request_id: the ID of the request being cancelled
-                    // - reason: why the request was cancelled
-                    tracing::debug!(
-                        "Request {} cancelled: {}",
-                        cancelled.request_id,
-                        cancelled.reason
-                    );
-                    
-                    Ok(())
-                })
-            })
-        );
-
-        // Handle progress notifications
-        let progress_handlers = Arc::clone(&self.progress_handlers);
-        self.set_notification_handler(
-            "progress",
-            Box::new(move |notification| {
-                let progress_handlers = Arc::clone(&progress_handlers);
-                Box::pin(async move {
-                    let params = notification.params
-                        .ok_or(McpError::InvalidParams)?;
-                    
-                    let progress: ProgressNotification = serde_json::from_value(params)
-                        .map_err(|_| McpError::InvalidParams)?;
-
-                    // Find and call the progress handler for this token
-                    if let Some(handler) = progress_handlers.read().await.get(&progress.progress_token) {
-                        handler(Progress {
-                            progress: progress.progress,
-                            total: progress.total,
-                        });
-                    }
-                    
-                    Ok(())
-                })
-            })
-        );
-
-        // Handle ping requests
-        self.set_request_handler(
-            "ping",
-            Box::new(|_request, _extra| {
-                Box::pin(async {
-                    // Respond with an empty object as per protocol
-                    Ok(serde_json::json!({}))
-                })
-            })
-        );
-
-        // Handle initialize request 
-        self.set_request_handler(
-            "initialize",
-            Box::new(|request, _extra| {
-                Box::pin(async move {
-                    // Parse initialization parameters
-                    let params = request.params
-                        .ok_or(McpError::InvalidParams)?;
-                    
-                    let init_params: InitializeParams = serde_json::from_value(params)
-                        .map_err(|_| McpError::InvalidParams)?;
-
-                    // Respond with server capabilities
-                    Ok(serde_json::json!({
-                        "protocolVersion": "2024-11-05",
-                        "capabilities": {
-                            "resources": {
-                                "subscribe": true,
-                                "listChanged": true
-                            }
-                            // Add other capabilities as needed
-                        }
-                    }))
-                })
-            })
-        );
-
-        // Handle shutdown request
-        self.set_request_handler(
-            "shutdown",
-            Box::new(|_request, _extra| {
-                Box::pin(async {
-                    // Prepare for shutdown (cleanup could go here)
-                    Ok(serde_json::json!(null))
-                })
-            })
-        );
-    }
-
-
-
 
     // Protected methods that should be implemented by subclasses
     fn assert_capability_for_method(&self, method: &str) -> Result<(), McpError> {

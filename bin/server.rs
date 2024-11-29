@@ -15,7 +15,7 @@ pub struct Cli {
     config: Option<PathBuf>,
 
     /// Transport type (stdio, sse, websocket)
-    #[arg(short, long, default_value = "stdio")]
+    #[arg(short, long, default_value = "sse")]
     transport: String,
 
     /// Server port for network transports
@@ -33,6 +33,8 @@ pub struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<(), McpError> {
+    tracing_subscriber::fmt::init();
+
     let cli = Cli::parse();
     
     // Load configuration
