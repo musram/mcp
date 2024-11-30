@@ -3,25 +3,34 @@ use std::{sync::Arc, time::Duration};
 use config::ServerConfig;
 use tracing::info;
 
-use crate::{error::McpError, protocol::{Protocol, ProtocolOptions, ProtocolBuilder}, resource::{ListResourcesRequest, ReadResourceRequest, ResourceCapabilities, ResourceManager}, transport::{SseTransport, StdioTransport}};
+use crate::{error::McpError, protocol::{Protocol, ProtocolBuilder, ProtocolOptions}, resource::{ListResourcesRequest, ReadResourceRequest, ResourceCapabilities, ResourceManager}, tools::{CallToolRequest, ListToolsRequest}, transport::{SseTransport, StdioTransport}};
+use crate::tools::{ToolManager, ToolCapabilities};
 
 pub mod config;
 
 pub struct McpServer {
-    config: ServerConfig,
-    resource_manager: Arc<ResourceManager>,
+    pub config: ServerConfig,
+    pub resource_manager: Arc<ResourceManager>,
+    pub tool_manager: Arc<ToolManager>,
 }
 
 impl McpServer {
     pub fn new(config: ServerConfig) -> Self {
-        let capabilities = ResourceCapabilities {
+        let resource_capabilities = ResourceCapabilities {
             subscribe: true,
             list_changed: true,
         };
-        let resource_manager = Arc::new(ResourceManager::new(capabilities));
+        let tool_capabilities = ToolCapabilities {
+            list_changed: true,
+        };
+        
+        let resource_manager = Arc::new(ResourceManager::new(resource_capabilities));
+        let tool_manager = Arc::new(ToolManager::new(tool_capabilities));
+        
         Self {
             config,
             resource_manager,
+            tool_manager,
         }
     }
 
@@ -65,9 +74,11 @@ impl McpServer {
     }
 
     fn register_resource_handlers(&self, builder: ProtocolBuilder) -> ProtocolBuilder {
-        // Add this line to store a cloned reference
+        // Clone Arc references once at the beginning
         let resource_manager = Arc::clone(&self.resource_manager);
+        let tool_manager = Arc::clone(&self.tool_manager);
 
+        // Chain all handlers in a single builder flow
         let builder = builder
             .with_request_handler(
                 "resources/list",
@@ -87,6 +98,7 @@ impl McpServer {
                 })
             );
 
+        // Clone for next handler
         let resource_manager = Arc::clone(&self.resource_manager);
         let builder = builder
             .with_request_handler(
@@ -102,6 +114,7 @@ impl McpServer {
                 })
             );
 
+        // Clone for next handler
         let resource_manager = Arc::clone(&self.resource_manager);
         let builder = builder
             .with_request_handler(
@@ -115,10 +128,11 @@ impl McpServer {
                     })
                 })
             );
-        
-        if self.resource_manager.capabilities.subscribe {
+
+        // Clone for conditional handler
+        let builder = if self.resource_manager.capabilities.subscribe {
             let resource_manager = Arc::clone(&self.resource_manager);
-            let builder = builder.with_request_handler(
+            builder.with_request_handler(
                 "resources/subscribe",
                 Box::new(move |request, _extra| {
                     let rm = Arc::clone(&resource_manager);
@@ -127,12 +141,46 @@ impl McpServer {
                         rm.subscribe(request.id.to_string(), params).await
                             .map(|_| serde_json::json!({}))
                     })
-                }),
-            );
-            builder
+                })
+            )
         } else {
             builder
-        }
+        };
+
+        // Add tool handlers
+        let builder = builder
+            .with_request_handler(
+                "tools/list",
+                Box::new(move |request, _extra| {
+                    let tm = Arc::clone(&tool_manager);
+                    Box::pin(async move {
+                        let params: ListToolsRequest = if let Some(params) = request.params {
+                            serde_json::from_value(params).unwrap()
+                        } else {
+                            ListToolsRequest { cursor: None }
+                        };
+                        
+                        tm.list_tools(params.cursor).await
+                            .map(|response| serde_json::to_value(response).unwrap())
+                            .map_err(|e| e.into())
+                    })
+                })
+            );
+
+        // Clone for final handler
+        let tool_manager = Arc::clone(&self.tool_manager);
+        builder.with_request_handler(
+            "tools/call",
+            Box::new(move |request, _extra| {
+                let tm = Arc::clone(&tool_manager);
+                Box::pin(async move {
+                    let params: CallToolRequest = serde_json::from_value(request.params.unwrap()).unwrap();
+                    tm.call_tool(&params.name, params.arguments).await
+                        .map(|response| serde_json::to_value(response).unwrap())
+                        .map_err(|e| e.into())
+                })
+            })
+        )
     }
 
     pub async fn run(&mut self) -> Result<(), McpError> {

@@ -8,7 +8,7 @@ use std::{
 use tokio::sync::{mpsc, RwLock};
 use uuid::Uuid;
 
-use crate::{error::McpError, resource::ResourceCapabilities, transport::{JsonRpcMessage, Transport, TransportChannels, TransportCommand, TransportEvent}};
+use crate::{error::McpError, resource::ResourceCapabilities, tools::{CallToolRequest, ListToolsRequest, ToolCapabilities}, transport::{JsonRpcMessage, Transport, TransportChannels, TransportCommand, TransportEvent}};
 
 // Constants
 pub const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 60000;
@@ -136,7 +136,7 @@ impl ProtocolBuilder {
     }
 
     pub fn build(self) -> Protocol {
-        let mut protocol = Protocol {
+        let protocol = Protocol {
             cmd_tx: None,
             event_rx: None,
             options: self.options,
@@ -154,7 +154,35 @@ impl ProtocolBuilder {
 
 impl Protocol {
     pub fn builder(options: Option<ProtocolOptions>) -> ProtocolBuilder {
-        ProtocolBuilder::new(options).register_default_handlers()
+        ProtocolBuilder::new(options)
+            .register_default_handlers()
+            .with_request_handler(
+                "tools/list",
+                Box::new(move |request, _extra| {
+                    Box::pin(async move {
+                        let params: ListToolsRequest = serde_json::from_value(request.params.unwrap_or_default())
+                            .map_err(|_| McpError::InvalidParams)?;
+                            
+                        // Tool manager would be accessed here
+                        Ok(serde_json::json!({"tools": [], "nextCursor": null}))
+                    })
+                })
+            )
+            .with_request_handler(
+                "tools/call",
+                Box::new(move |request, _extra| {
+                    Box::pin(async move {
+                        let params: CallToolRequest = serde_json::from_value(request.params.unwrap())
+                            .map_err(|_| McpError::InvalidParams)?;
+                            
+                        // Tool manager would be accessed here
+                        Ok(serde_json::json!({
+                            "content": [],
+                            "isError": false
+                        }))
+                    })
+                })
+            )
     }
 
     pub async fn connect<T: Transport>(&mut self, mut transport: T) -> Result<(), McpError> {
@@ -454,11 +482,8 @@ struct InitializeParams {
 struct Capabilities {
     #[serde(default)]
     resources: Option<ResourceCapabilities>,
-    // Add other capability types as needed
-}
-
-fn default_protocol_version() -> String {
-    "2024-11-05".to_string()
+    #[serde(default)]
+    tools: Option<ToolCapabilities>,
 }
 
 #[derive(Debug, Serialize)]
@@ -470,5 +495,10 @@ struct InitializeResult {
 #[derive(Debug, Serialize)]
 struct ServerCapabilities {
     resources: ResourceCapabilities,
+    tools: ToolCapabilities,
     // Add other capability types as needed
+}
+
+fn default_protocol_version() -> String {
+    "2024-11-05".to_string()
 }
