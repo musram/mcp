@@ -3,12 +3,12 @@ use tokio;
 
 use mcp_rs::{
     error::McpError,
-    resource::{FileSystemProvider, ResourceCapabilities, ResourceManager},
+    resource::FileSystemProvider,
     server::{config::ServerConfig, McpServer},
 };
 
 #[tokio::test]
-async fn test_resource_loading() -> Result<(), McpError> {
+async fn test_resource_loading_integration() -> Result<(), McpError> {
     // Create test server config
     let mut config = ServerConfig::default();
     let root_dir = env::current_dir().unwrap();

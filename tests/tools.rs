@@ -6,7 +6,7 @@ use tokio;
 use mcp_rs::{
     tools::{Tool, ToolProvider, ToolResult, ToolContent},
     error::McpError,
-    server::{McpServer, config::{ServerConfig, TransportType}},
+    server::{McpServer, config::ServerConfig},
 };
 
 // Mock tool provider for testing
@@ -75,7 +75,7 @@ struct CalculatorParams {
 async fn test_tool_registration_and_listing() {
     // Create test server
     let config = ServerConfig::default();
-    let mut server = McpServer::new(config);
+    let server = McpServer::new(config);
     
     // Register mock tool
     let tool_provider = Arc::new(MockCalculatorTool);
@@ -91,7 +91,7 @@ async fn test_tool_registration_and_listing() {
 async fn test_tool_execution() {
     // Create test server
     let config = ServerConfig::default();
-    let mut server = McpServer::new(config);
+    let server = McpServer::new(config);
     
     // Register mock tool
     let tool_provider = Arc::new(MockCalculatorTool);
@@ -134,7 +134,7 @@ async fn test_tool_execution() {
 async fn test_invalid_tool() {
     // Create test server
     let config = ServerConfig::default();
-    let mut server = McpServer::new(config);
+    let server = McpServer::new(config);
 
     // Test calling non-existent tool
     let result = server.tool_manager.call_tool(
@@ -155,7 +155,7 @@ async fn test_invalid_tool() {
 async fn test_invalid_arguments() {
     // Create test server
     let config = ServerConfig::default();
-    let mut server = McpServer::new(config);
+    let server = McpServer::new(config);
     
     // Register mock tool
     let tool_provider = Arc::new(MockCalculatorTool);

@@ -155,13 +155,17 @@ impl McpServer {
                     let tm = Arc::clone(&tool_manager);
                     Box::pin(async move {
                         let params: ListToolsRequest = if let Some(params) = request.params {
-                            serde_json::from_value(params).unwrap()
+                            serde_json::from_value(params).map_err(|e| {
+                                tracing::error!("Error parsing list tools request: {:?}", e);
+                                
+                                McpError::ParseError})?
                         } else {
                             ListToolsRequest { cursor: None }
                         };
                         
                         tm.list_tools(params.cursor).await
                             .map(|response| serde_json::to_value(response).unwrap())
+                            
                             .map_err(|e| e.into())
                     })
                 })

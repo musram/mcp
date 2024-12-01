@@ -2,7 +2,6 @@ use futures::StreamExt;
 use reqwest::Client;
 use reqwest_eventsource::{Event, EventSource};
 use serde_json::json;
-use std::time::Duration;
 
 #[tokio::test]
 async fn test_sse_client() {

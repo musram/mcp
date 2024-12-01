@@ -1,14 +1,10 @@
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    sync::Arc,
-    time::{Duration, Instant},
+use crate::{
+    error::McpError,
+    transport::{JsonRpcMessage, Transport, TransportChannels, TransportCommand, TransportEvent},
 };
+use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, RwLock};
-use uuid::Uuid;
-
-use crate::{error::McpError, resource::ResourceCapabilities, tools::{CallToolRequest, ListToolsRequest, ToolCapabilities}, transport::{JsonRpcMessage, Transport, TransportChannels, TransportCommand, TransportEvent}};
 
 // Constants
 pub const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 60000;
@@ -36,7 +32,6 @@ pub struct Progress {
 }
 
 pub type ProgressCallback = Box<dyn Fn(Progress) + Send + Sync>;
-
 
 pub struct RequestOptions {
     pub on_progress: Option<ProgressCallback>,
@@ -69,7 +64,7 @@ pub struct Protocol {
     notification_handlers: Arc<RwLock<HashMap<String, NotificationHandler>>>,
     response_handlers: Arc<RwLock<HashMap<u64, ResponseHandler>>>,
     progress_handlers: Arc<RwLock<HashMap<u64, ProgressCallback>>>,
-    request_abort_controllers: Arc<RwLock<HashMap<String, tokio::sync::watch::Sender<bool>>>>,
+    //request_abort_controllers: Arc<RwLock<HashMap<String, tokio::sync::watch::Sender<bool>>>>,
 }
 
 type RequestHandler = Box<
@@ -104,7 +99,8 @@ impl ProtocolBuilder {
     }
 
     pub fn with_notification_handler(mut self, method: &str, handler: NotificationHandler) -> Self {
-        self.notification_handlers.insert(method.to_string(), handler);
+        self.notification_handlers
+            .insert(method.to_string(), handler);
         self
     }
 
@@ -114,21 +110,20 @@ impl ProtocolBuilder {
             "cancelled",
             Box::new(|notification| {
                 Box::pin(async move {
-                    let params = notification.params
-                        .ok_or(McpError::InvalidParams)?;
-                    
-                    let cancelled: CancelledNotification = serde_json::from_value(params)
-                        .map_err(|_| McpError::InvalidParams)?;
+                    let params = notification.params.ok_or(McpError::InvalidParams)?;
+
+                    let cancelled: CancelledNotification =
+                        serde_json::from_value(params).map_err(|_| McpError::InvalidParams)?;
 
                     tracing::debug!(
                         "Request {} cancelled: {}",
                         cancelled.request_id,
                         cancelled.reason
                     );
-                    
+
                     Ok(())
                 })
-            })
+            }),
         );
 
         // Add other default handlers similarly...
@@ -145,7 +140,7 @@ impl ProtocolBuilder {
             notification_handlers: Arc::new(RwLock::new(self.notification_handlers)),
             response_handlers: Arc::new(RwLock::new(HashMap::new())),
             progress_handlers: Arc::new(RwLock::new(HashMap::new())),
-            request_abort_controllers: Arc::new(RwLock::new(HashMap::new())),
+            //request_abort_controllers: Arc::new(RwLock::new(HashMap::new())),
         };
 
         protocol
@@ -154,35 +149,8 @@ impl ProtocolBuilder {
 
 impl Protocol {
     pub fn builder(options: Option<ProtocolOptions>) -> ProtocolBuilder {
-        ProtocolBuilder::new(options)
-            .register_default_handlers()
-            .with_request_handler(
-                "tools/list",
-                Box::new(move |request, _extra| {
-                    Box::pin(async move {
-                        let params: ListToolsRequest = serde_json::from_value(request.params.unwrap_or_default())
-                            .map_err(|_| McpError::InvalidParams)?;
-                            
-                        // Tool manager would be accessed here
-                        Ok(serde_json::json!({"tools": [], "nextCursor": null}))
-                    })
-                })
-            )
-            .with_request_handler(
-                "tools/call",
-                Box::new(move |request, _extra| {
-                    Box::pin(async move {
-                        let params: CallToolRequest = serde_json::from_value(request.params.unwrap())
-                            .map_err(|_| McpError::InvalidParams)?;
-                            
-                        // Tool manager would be accessed here
-                        Ok(serde_json::json!({
-                            "content": [],
-                            "isError": false
-                        }))
-                    })
-                })
-            )
+        ProtocolBuilder::new(options).register_default_handlers()
+        // Remove the tools/list and tools/call handlers from here
     }
 
     pub async fn connect<T: Transport>(&mut self, mut transport: T) -> Result<(), McpError> {
@@ -210,10 +178,10 @@ impl Protocol {
                                 // Create abort controller for the request
                                 let (tx, rx) = tokio::sync::watch::channel(false);
                                 let extra = RequestHandlerExtra { signal: rx };
-                                
+
                                 // Handle request
                                 let result = handler(req.clone(), extra).await;
-                                
+
                                 // Send response
                                 let response = match result {
                                     Ok(result) => JsonRpcMessage::Response(JsonRpcResponse {
@@ -233,7 +201,7 @@ impl Protocol {
                                         }),
                                     }),
                                 };
-                                
+
                                 let _ = cmd_tx.send(TransportCommand::SendMessage(response)).await;
                             }
                         }
@@ -262,7 +230,7 @@ impl Protocol {
 
         self.cmd_tx = Some(cmd_tx_clone);
         self.event_rx = Some(event_rx);
-        
+
         Ok(())
     }
 
@@ -277,7 +245,7 @@ impl Protocol {
         Resp: for<'de> Deserialize<'de>,
     {
         let options = options.unwrap_or_default();
-        
+
         if self.options.enforce_strict_capabilities {
             self.assert_capability_for_method(method)?;
         }
@@ -289,12 +257,15 @@ impl Protocol {
         };
 
         let (tx, rx) = tokio::sync::oneshot::channel();
-        
+
         let mut params_value = serde_json::to_value(params).map_err(|_| McpError::InvalidParams)?;
-        
+
         if let Some(progress_callback) = options.on_progress {
-            self.progress_handlers.write().await.insert(message_id, progress_callback);
-            
+            self.progress_handlers
+                .write()
+                .await
+                .insert(message_id, progress_callback);
+
             if let serde_json::Value::Object(ref mut map) = params_value {
                 map.insert(
                     "_meta".to_string(),
@@ -318,15 +289,19 @@ impl Protocol {
         );
 
         if let Some(cmd_tx) = &self.cmd_tx {
-            cmd_tx.send(TransportCommand::SendMessage(request)).await
+            cmd_tx
+                .send(TransportCommand::SendMessage(request))
+                .await
                 .map_err(|_| McpError::ConnectionClosed)?;
         } else {
             return Err(McpError::NotConnected);
         }
 
         // Setup timeout
-        let timeout = options.timeout.unwrap_or(Duration::from_millis(DEFAULT_REQUEST_TIMEOUT_MS));
-        
+        let timeout = options
+            .timeout
+            .unwrap_or(Duration::from_millis(DEFAULT_REQUEST_TIMEOUT_MS));
+
         let timeout_fut = tokio::time::sleep(timeout);
         tokio::pin!(timeout_fut);
 
@@ -348,7 +323,7 @@ impl Protocol {
 
         // Cleanup progress handler
         self.progress_handlers.write().await.remove(&message_id);
-        
+
         result
     }
 
@@ -366,7 +341,9 @@ impl Protocol {
         });
 
         if let Some(cmd_tx) = &self.cmd_tx {
-            cmd_tx.send(TransportCommand::SendMessage(notification)).await
+            cmd_tx
+                .send(TransportCommand::SendMessage(notification))
+                .await
                 .map_err(|_| McpError::ConnectionClosed)?;
             Ok(())
         } else {
@@ -383,25 +360,17 @@ impl Protocol {
         Ok(())
     }
 
-    pub async fn set_request_handler(
-        &mut self,
-        method: &str,
-        handler: RequestHandler,
-    ) {
+    pub async fn set_request_handler(&mut self, method: &str, handler: RequestHandler) {
         self.assert_request_handler_capability(method)
             .expect("Invalid request handler capability");
-            
+
         self.request_handlers
             .write()
             .await
             .insert(method.to_string(), handler);
     }
 
-    pub async fn set_notification_handler(
-        &mut self,
-        method: &str,
-        handler: NotificationHandler,
-    ) {
+    pub async fn set_notification_handler(&mut self, method: &str, handler: NotificationHandler) {
         self.notification_handlers
             .write()
             .await
@@ -423,8 +392,6 @@ impl Protocol {
         // Subclasses should implement this
         Ok(())
     }
-
-
 }
 
 // Helper types for JSON-RPC
@@ -469,34 +436,6 @@ pub struct JsonRpcError {
     pub code: i32,
     pub message: String,
     pub data: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize)]
-struct InitializeParams {
-    #[serde(default = "default_protocol_version")]
-    protocol_version: String,
-    capabilities: Capabilities,
-}
-
-#[derive(Debug, Deserialize)]
-struct Capabilities {
-    #[serde(default)]
-    resources: Option<ResourceCapabilities>,
-    #[serde(default)]
-    tools: Option<ToolCapabilities>,
-}
-
-#[derive(Debug, Serialize)]
-struct InitializeResult {
-    protocol_version: String,
-    capabilities: ServerCapabilities,
-}
-
-#[derive(Debug, Serialize)]
-struct ServerCapabilities {
-    resources: ResourceCapabilities,
-    tools: ToolCapabilities,
-    // Add other capability types as needed
 }
 
 fn default_protocol_version() -> String {

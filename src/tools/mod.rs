@@ -95,7 +95,7 @@ impl ToolManager {
         tools.insert(tool.name, provider);
     }
 
-    pub async fn list_tools(&self, cursor: Option<String>) -> Result<ListToolsResponse, McpError> {
+    pub async fn list_tools(&self, _cursor: Option<String>) -> Result<ListToolsResponse, McpError> {
         let tools = self.tools.read().await;
         let mut tool_list = Vec::new();
         

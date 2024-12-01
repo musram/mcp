@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tokio::{io::{AsyncBufReadExt, AsyncWriteExt}, sync::{mpsc, oneshot}};
+use tokio::{io::{AsyncBufReadExt, AsyncWriteExt}, sync::mpsc};
 use warp::Filter;
 use std::sync::Arc;
 
@@ -69,6 +69,7 @@ impl StdioTransport {
             tokio::spawn(async move {
                 while let Some(msg) = write_rx.recv().await {
                     if let Err(e) = writer.write_all(msg.as_bytes()).await {
+                        tracing::error!("Error writing to stdout: {:?}", e);
                         break;
                     }
                 }
@@ -95,6 +96,7 @@ impl StdioTransport {
                                     }
                                 }
                                 Err(e) => {
+                                    tracing::error!("Error parsing message: {:?}", e);
                                     if event_tx.send(TransportEvent::Error(McpError::ParseError)).await.is_err() {
                                         break;
                                     }
@@ -102,6 +104,7 @@ impl StdioTransport {
                             }
                         }
                         Err(e) => {
+                            tracing::error!("Error reading from stdin: {:?}", e);
                             let _ = event_tx.send(TransportEvent::Error(McpError::IoError)).await;
                             break;
                         }
@@ -240,8 +243,6 @@ impl Transport for SseTransport {
 
 #[cfg(test)]
 mod tests {
-    use tracing::event;
-
     use crate::{error::McpError, protocol::JsonRpcNotification, transport::{JsonRpcMessage, StdioTransport, Transport, TransportChannels, TransportCommand, TransportEvent}};
 
     #[tokio::test]

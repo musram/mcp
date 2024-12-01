@@ -191,7 +191,7 @@ impl ResourceManager {
         Ok(())
     }
 
-    pub async fn notify_resource_updated(&self, uri: &str) -> Result<(), McpError> {
+    pub async fn notify_resource_updated(&self, _uri: &str) -> Result<(), McpError> {
         if !self.capabilities.subscribe {
             return Err(McpError::CapabilityNotSupported("subscribe".to_string()));
         }
@@ -237,11 +237,24 @@ impl FileSystemProvider {
         
         Ok(full_path)
     }
+
+    fn is_text_content(&self, mime_type: &str, content: &[u8]) -> bool {
+        // Check if it's a known text format
+        if mime_type.starts_with("text/") ||
+           mime_type == "application/json" ||
+           mime_type == "application/javascript" ||
+           mime_type == "application/xml" {
+            return true;
+        }
+
+        // Fallback: Check if content looks like UTF-8 text
+        String::from_utf8(content.to_vec()).is_ok()
+    }
 }
 
 #[async_trait]
 impl ResourceProvider for FileSystemProvider {
-    async fn list_resources(&self, cursor: Option<String>) -> Result<(Vec<Resource>, Option<String>), McpError> {
+    async fn list_resources(&self, _cursor: Option<String>) -> Result<(Vec<Resource>, Option<String>), McpError> {
         let mut resources = Vec::new();
         let mut entries = tokio::fs::read_dir(&self.root_path).await.map_err(|_e| McpError::IoError)?;
         
@@ -272,32 +285,24 @@ impl ResourceProvider for FileSystemProvider {
         }
 
         let content = tokio::fs::read(&path).await.map_err(|_e| McpError::IoError)?;
-        let mime_type = MimeGuess::from_path(path.clone()).first();
-                   
-                
+        let mime_type = MimeGuess::from_path(&path)
+            .first()
+            .map(|m| m.to_string())
+            .unwrap_or_else(|| "application/octet-stream".to_string());
 
-        let resource_content = if let Some(mime_type) = mime_type.as_ref() {
-            if mime_type.type_() == "text" {
-                let text = String::from_utf8(content)
-                    .map_err(|_| McpError::InvalidResource("Invalid UTF-8".to_string()))?;
-                ResourceContent {
-                    uri: uri.to_string(),
-                    mime_type: Some(mime_type.to_string()),
-                    text: Some(text),
-                    blob: None,
-                }
-            } else {
-                ResourceContent {
-                    uri: uri.to_string(),
-                    mime_type: Some(mime_type.to_string()),
-                    text: None,
-                    blob: Some(BASE64.encode(&content)),
-                }
+        let resource_content = if self.is_text_content(&mime_type, &content) {
+            let text = String::from_utf8(content)
+                .map_err(|_| McpError::InvalidResource("Invalid UTF-8".to_string()))?;
+            ResourceContent {
+                uri: uri.to_string(),
+                mime_type: Some(mime_type),
+                text: Some(text),
+                blob: None,
             }
         } else {
             ResourceContent {
                 uri: uri.to_string(),
-                mime_type: None,
+                mime_type: Some(mime_type),
                 text: None,
                 blob: Some(BASE64.encode(&content)),
             }
@@ -323,4 +328,37 @@ impl ResourceProvider for FileSystemProvider {
         self.sanitize_path(uri)?;
         Ok(())
     }
+}
+
+// Add test module
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_json_resource_loading() -> Result<(), McpError> {
+        // Create temp directory
+        let temp_dir = TempDir::new().unwrap();
+        let provider = FileSystemProvider::new(temp_dir.path());
+
+        // Create test JSON file
+        let json_path = temp_dir.path().join("test.json");
+        fs::write(&json_path, r#"{"test": "value"}"#).unwrap();
+
+        // Test JSON file reading
+        let uri = format!("file://{}", json_path.to_string_lossy());
+        let contents = provider.read_resource(&uri).await?;
+        
+        assert_eq!(contents.len(), 1);
+        let content = &contents[0];
+        assert!(content.text.is_some());
+        assert!(content.blob.is_none());
+        assert_eq!(content.mime_type.as_deref(), Some("application/json"));
+
+        Ok(())
+    }
+
+    
 }

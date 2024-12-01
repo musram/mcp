@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::json;
-use tokio;
 
 use crate::error::McpError;
 
@@ -160,7 +159,9 @@ impl ToolProvider for CalculatorTool {
 
     async fn execute(&self, arguments: serde_json::Value) -> Result<ToolResult, McpError> {
         let params: CalculatorParams = serde_json::from_value(arguments)
-            .map_err(|e| McpError::InvalidParams)?;
+            .map_err(|e| {
+                tracing::error!("Error parsing calculator arguments: {:?}", e);
+                McpError::InvalidParams})?;
 
         match self.service.calculate(&params) {
             Ok(result) => Ok(ToolResult {
@@ -189,7 +190,7 @@ mod tests {
     #[tokio::test]
     async fn test_advanced_operations() {
         let config = ServerConfig::default();
-        let mut server = McpServer::new(config);
+        let server = McpServer::new(config);
         let tool_provider = Arc::new(CalculatorTool::new());
         server.tool_manager.register_tool(tool_provider).await;
 
@@ -229,7 +230,7 @@ mod tests {
     #[tokio::test]
     async fn test_error_handling() {
         let config = ServerConfig::default();
-        let mut server = McpServer::new(config);
+        let server = McpServer::new(config);
         let tool_provider = Arc::new(CalculatorTool::new());
         server.tool_manager.register_tool(tool_provider).await;
 
