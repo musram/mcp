@@ -1,0 +1,2 @@
+Hello from the Model Context Protocol!
+This is a test resource file.

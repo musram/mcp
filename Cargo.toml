@@ -34,3 +34,6 @@ reqwest-eventsource = "0.6.0"
 [[bin]]
 name = "server"
 path = "bin/server.rs"
+
+[dev-dependencies]
+tempfile = "3.14.0"
