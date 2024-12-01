@@ -1,8 +1,12 @@
 use async_trait::async_trait;
+use futures::StreamExt;
+use jsonrpc_core::request;
+use reqwest::RequestBuilder;
+use reqwest_eventsource::{Event, EventSource};
 use serde::{Deserialize, Serialize};
-use tokio::{io::{AsyncBufReadExt, AsyncWriteExt}, sync::mpsc};
+use tokio::{io::{AsyncBufReadExt, AsyncWriteExt}, sync::{broadcast, mpsc}};
 use warp::Filter;
-use std::sync::Arc;
+use std::{net::IpAddr, sync::{atomic::{AtomicU64, Ordering}, Arc}};
 
 use crate::{error::McpError, protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse}};
 
@@ -156,74 +160,182 @@ impl Transport for StdioTransport {
 }
 
 // SSE Transport Implementation
+#[derive(Debug, Serialize, Deserialize)]
+struct EndpointEvent {
+    endpoint: String,
+}
+
 pub struct SseTransport {
+    host: String,
     port: u16,
+    client_mode: bool,
     buffer_size: usize,
 }
 
+
 impl SseTransport {
-    pub fn new(port: u16, buffer_size: usize) -> Self {
-        Self { port, buffer_size }
+    pub fn new_server(host: String, port: u16, buffer_size: usize) -> Self {
+        Self {
+            host,
+            port,
+            client_mode: false,
+            buffer_size,
+        }
     }
 
-    async fn run(
+    pub fn new_client(host: String, port: u16, buffer_size: usize) -> Self {
+        Self {
+            host,
+            port,
+            client_mode: true,
+            buffer_size,
+        }
+    }
+
+    async fn run_server(
+        host: String,
         port: u16,
         mut cmd_rx: mpsc::Receiver<TransportCommand>,
         event_tx: mpsc::Sender<TransportEvent>,
     ) {
-        // Create a channel for client connections
-        let (client_tx, mut client_rx) = mpsc::channel::<mpsc::Sender<String>>(100);
-        
-        // Spawn HTTP server
-        let server_handle = {
-            let client_tx = client_tx.clone();
-            tokio::spawn(async move {
-                let routes = warp::path("events")
-                    .and(warp::get())
-                    .map(move || {
-                        let (tx, mut rx) = mpsc::channel(32);
-                        let _ = client_tx.try_send(tx);
-                        
-                        warp::sse::reply(warp::sse::keep_alive().stream(async_stream::stream! {
-                            while let Some(msg) = rx.recv().await {
-                                yield Ok::<_, warp::Error>(warp::sse::Event::default().data(msg));
-                            }
-                        }))
-                    });
+        // Create channels for client message broadcasting
+        let (broadcast_tx, _) = tokio::sync::broadcast::channel(100);
+        let broadcast_tx = Arc::new(broadcast_tx);
+        let broadcast_tx2 = broadcast_tx.clone();
+        // Create a unique client ID generator
+        let client_counter = Arc::new(AtomicU64::new(0));
 
-                warp::serve(routes).run(([127, 0, 0, 1], port)).await;
-            })
+        let host_clone = host.clone();
+
+        // SSE route
+        let sse_route = warp::path("sse")
+            .and(warp::get())
+            .map(move || {
+                let client_id = client_counter.fetch_add(1, Ordering::SeqCst);
+            
+                let broadcast_rx = broadcast_tx.subscribe();
+                let endpoint = format!("http://{}:{}/message/{}", host.clone(), port, client_id);
+
+                warp::sse::reply(warp::sse::keep_alive().stream(async_stream::stream! {
+                    // Send initial endpoint event
+                    yield Ok::<_, warp::Error>(warp::sse::Event::default()
+                        .event("endpoint")
+                        .json_data(&EndpointEvent { endpoint })
+                        .unwrap());
+
+                    let mut broadcast_rx = broadcast_rx;
+                    while let Ok(msg) = broadcast_rx.recv().await {
+                        yield Ok::<_, warp::Error>(warp::sse::Event::default()
+                            .event("message")
+                            .json_data(&msg)
+                            .unwrap());
+                    }
+                }))
+            });
+
+        // Message receiving route
+        let message_route = warp::path!("message" / u64)
+            .and(warp::post())
+            .and(warp::body::json())
+            .map(move |client_id: u64, message: JsonRpcMessage| {
+                let event_tx = event_tx.clone();
+                tokio::spawn(async move {
+                    let _ = event_tx.send(TransportEvent::Message(message)).await;
+                });
+                warp::reply()
+            });
+
+        // Combine routes
+        let routes = sse_route.or(message_route);
+
+        // Create command handler
+
+        tokio::spawn(async move {
+            while let Some(cmd) = cmd_rx.recv().await {
+                match cmd {
+                    TransportCommand::SendMessage(msg) => {
+                        let _ = broadcast_tx2.send(msg);
+                    }
+                    TransportCommand::Close => break,
+                }
+            }
+        });
+
+        // Start server
+        warp::serve(routes)
+            .run((host_clone.parse::<IpAddr>().unwrap(), port))
+            .await;
+    }
+
+    async fn run_client(
+        host: String,
+        port: u16,
+        mut cmd_rx: mpsc::Receiver<TransportCommand>,
+        event_tx: mpsc::Sender<TransportEvent>,
+    ) {
+        let client = reqwest::Client::new();
+        let sse_url = format!("http://{}:{}/sse", host, port);
+
+       
+        let rb = client.get(&sse_url);
+        // Connect to SSE stream
+        let mut sse = match EventSource::new(rb) {
+            Ok(es) => es,
+            Err(e) => {
+                let _ = event_tx.send(TransportEvent::Error(McpError::ConnectionClosed)).await;
+                return;
+            }
         };
 
-        // Maintain active clients
-        let mut clients = Vec::new();
-
-        // Main event loop
-        loop {
-            tokio::select! {
-                // Handle new client connections
-                Some(client) = client_rx.recv() => {
-                    clients.push(client);
+        // Wait for endpoint event
+        let endpoint = loop {
+            match sse.next().await {
+                Some(Ok(Event::Message(m))) if m.event == "endpoint" => {
+                    let endpoint: EndpointEvent = serde_json::from_str(m.data.as_str()).unwrap();
+                    break endpoint.endpoint;
                 }
+                Some(Err(_)) => {
+                    let _ = event_tx.send(TransportEvent::Error(McpError::ConnectionClosed)).await;
+                    return;
+                }
+                None => {
+                    let _ = event_tx.send(TransportEvent::Error(McpError::ConnectionClosed)).await;
+                    return;
+                }
+                _ => continue,
+            }
+        };
 
-                // Handle transport commands
-                Some(cmd) = cmd_rx.recv() => {
-                    match cmd {
-                        TransportCommand::SendMessage(msg) => {
-                            if let Ok(msg_str) = serde_json::to_string(&msg) {
-                                clients.retain_mut(|client| {
-                                    client.try_send(msg_str.clone()).is_ok()
-                                });
-                            }
-                        }
-                        TransportCommand::Close => break,
+        // Spawn SSE message handler
+        let event_tx_clone = event_tx.clone();
+        tokio::spawn(async move {
+            while let Some(Ok(event)) = sse.next().await {
+               match event {
+                    Event::Message(m) if m.event == "message" => {
+                        let msg: JsonRpcMessage = serde_json::from_str(m.data.as_str()).unwrap();
+                        let _ = event_tx_clone.send(TransportEvent::Message(msg)).await;
+                    }
+                    _ => continue,
+                }
+            }
+        });
+
+        // Handle outgoing messages
+        while let Some(cmd) = cmd_rx.recv().await {
+            match cmd {
+                TransportCommand::SendMessage(msg) => {
+                    if let Err(_) = client.post(&endpoint)
+                        .json(&msg)
+                        .send()
+                        .await {
+                        let _ = event_tx.send(TransportEvent::Error(McpError::ConnectionClosed)).await;
                     }
                 }
+                TransportCommand::Close => break,
             }
         }
 
         // Cleanup
-        drop(server_handle);
         let _ = event_tx.send(TransportEvent::Closed).await;
     }
 }
@@ -234,7 +346,22 @@ impl Transport for SseTransport {
         let (cmd_tx, cmd_rx) = mpsc::channel(self.buffer_size);
         let (event_tx, event_rx) = mpsc::channel(self.buffer_size);
 
-        tokio::spawn(Self::run(self.port, cmd_rx, event_tx));
+        if self.client_mode {
+            tokio::spawn(Self::run_client(
+                self.host.clone(),
+                self.port,
+                cmd_rx,
+                event_tx,
+            ));
+        } else {
+            tokio::spawn(Self::run_server(
+                self.host.clone(),
+                self.port,
+                cmd_rx,
+                event_tx,
+            ));
+        }
+
         let event_rx = Arc::new(tokio::sync::Mutex::new(event_rx));
 
         Ok(TransportChannels { cmd_tx, event_rx })

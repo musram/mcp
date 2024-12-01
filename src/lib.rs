@@ -8,6 +8,7 @@ pub mod protocol;
 pub mod tools;
 pub mod prompts;
 pub mod logging;
+pub mod client;
 
 #[derive(Debug, Clone)]
 pub struct NotificationSender {

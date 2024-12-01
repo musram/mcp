@@ -246,6 +246,8 @@ impl Protocol {
     {
         let options = options.unwrap_or_default();
 
+        let has_progress = options.on_progress.is_some();
+
         if self.options.enforce_strict_capabilities {
             self.assert_capability_for_method(method)?;
         }
@@ -256,30 +258,37 @@ impl Protocol {
             *id
         };
 
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        // Only serialize params if Some
+        let params_value = if let Some(params) = params {
+            let mut value = serde_json::to_value(params).map_err(|_| McpError::InvalidParams)?;
+            
+            // Add progress token if needed
+            if let Some(progress_callback) = options.on_progress {
+                self.progress_handlers
+                    .write()
+                    .await
+                    .insert(message_id, progress_callback);
 
-        let mut params_value = serde_json::to_value(params).map_err(|_| McpError::InvalidParams)?;
-
-        if let Some(progress_callback) = options.on_progress {
-            self.progress_handlers
-                .write()
-                .await
-                .insert(message_id, progress_callback);
-
-            if let serde_json::Value::Object(ref mut map) = params_value {
-                map.insert(
-                    "_meta".to_string(),
-                    serde_json::json!({ "progressToken": message_id }),
-                );
+                if let serde_json::Value::Object(ref mut map) = value {
+                    map.insert(
+                        "_meta".to_string(),
+                        serde_json::json!({ "progressToken": message_id }),
+                    );
+                }
             }
-        }
+            Some(value)
+        } else {
+            None
+        };
 
         let request = JsonRpcMessage::Request(JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: message_id,
             method: method.to_string(),
-            params: Some(params_value),
+            params: params_value, // Now properly optional
         });
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
 
         self.response_handlers.write().await.insert(
             message_id,
@@ -298,10 +307,7 @@ impl Protocol {
         }
 
         // Setup timeout
-        let timeout = options
-            .timeout
-            .unwrap_or(Duration::from_millis(DEFAULT_REQUEST_TIMEOUT_MS));
-
+        let timeout = options.timeout.unwrap_or(Duration::from_millis(DEFAULT_REQUEST_TIMEOUT_MS));
         let timeout_fut = tokio::time::sleep(timeout);
         tokio::pin!(timeout_fut);
 
@@ -309,11 +315,16 @@ impl Protocol {
             response = rx => {
                 match response {
                     Ok(Ok(response)) => {
-                        serde_json::from_value(response.result.unwrap_or_default())
-                            .map_err(|_| McpError::InvalidParams)
+                        match response.result {
+                            Some(result) => serde_json::from_value(result).map_err(|_| McpError::InvalidParams),
+                            None => Err(McpError::InternalError),
+                        }
                     }
                     Ok(Err(e)) => Err(e),
-                    Err(_) => Err(McpError::InternalError),
+                    Err(e) => {
+                        tracing::error!("Request failed: {:?}", e);
+                        Err(McpError::InternalError)
+                    }
                 }
             }
             _ = timeout_fut => {
@@ -322,7 +333,9 @@ impl Protocol {
         };
 
         // Cleanup progress handler
-        self.progress_handlers.write().await.remove(&message_id);
+        if has_progress {
+            self.progress_handlers.write().await.remove(&message_id);
+        }
 
         result
     }
@@ -435,7 +448,7 @@ pub struct JsonRpcResponse {
     pub error: Option<JsonRpcError>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JsonRpcNotification {
     pub jsonrpc: String,
     pub method: String,
