@@ -392,6 +392,17 @@ impl Protocol {
         // Subclasses should implement this
         Ok(())
     }
+
+    pub async fn send_notification(&self, notification: JsonRpcNotification) -> Result<(), McpError> {
+        if let Some(cmd_tx) = &self.cmd_tx {
+            cmd_tx.send(TransportCommand::SendMessage(JsonRpcMessage::Notification(notification)))
+                .await
+                .map_err(|_| McpError::ConnectionClosed)?;
+            Ok(())
+        } else {
+            Err(McpError::NotConnected)
+        }
+    }
 }
 
 // Helper types for JSON-RPC
@@ -438,6 +449,3 @@ pub struct JsonRpcError {
     pub data: Option<serde_json::Value>,
 }
 
-fn default_protocol_version() -> String {
-    "2024-11-05".to_string()
-}

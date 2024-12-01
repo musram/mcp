@@ -38,6 +38,21 @@ pub struct SecuritySettings {
     pub allowed_origins: Vec<String>,
 }
 
+impl Default for SecuritySettings {
+    fn default() -> Self {
+        SecuritySettings {
+            enable_auth: false,
+            token_secret: None,
+            rate_limit: RateLimitSettings {
+                requests_per_minute: 60,
+                burst_size: 10,
+            },
+            allowed_origins: vec!["*".to_string()],
+        }
+    }
+}
+
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RateLimitSettings {
     pub requests_per_minute: u32,
@@ -51,6 +66,17 @@ pub struct LoggingSettings {
     pub format: LogFormat,
 }
 
+impl Default for LoggingSettings {
+    fn default() -> Self {
+        LoggingSettings {
+            level: "info".to_string(),
+            file: None,
+            format: LogFormat::Pretty,
+        }
+    }
+}
+
+
 // Add new tool settings struct
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ToolSettings {
@@ -59,6 +85,21 @@ pub struct ToolSettings {
     pub allowed_tools: Vec<String>,
     pub max_execution_time_ms: u64,
     pub rate_limit: RateLimitSettings,
+}
+
+impl Default for ToolSettings {
+    fn default() -> Self {
+        ToolSettings {
+            enabled: true,
+            require_confirmation: true,
+            allowed_tools: vec!["*".to_string()], // Allow all tools by default
+            max_execution_time_ms: 30000, // 30 seconds
+            rate_limit: RateLimitSettings {
+                requests_per_minute: 30,
+                burst_size: 5,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

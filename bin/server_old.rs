@@ -1,8 +1,6 @@
 use clap::Parser;
-use mcp_rs::logging::McpSubscriber;
 use mcp_rs::{
     error::McpError,
-    logging::LogLevel,
     prompts::Prompt,
     resource::FileSystemProvider,
     server::{
@@ -15,9 +13,7 @@ use mcp_rs::{
     tools::calculator::CalculatorTool,
 };
 use std::{path::PathBuf, sync::Arc};
-use tracing_subscriber::{
-    fmt::format::FmtSpan, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter,
-};
+use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -43,6 +39,12 @@ struct Args {
 async fn main() -> Result<(), McpError> {
     // Parse command line arguments
     let args = Args::parse();
+
+    // Set up logging
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .with_span_events(FmtSpan::CLOSE)
+        .init();
 
     // Load or create config
     let config = if let Some(config_path) = args.config {
@@ -91,31 +93,9 @@ async fn main() -> Result<(), McpError> {
     );
 
     let resources_root_path = config.resources.root_path.clone();
-    let logging_level = config.logging.level.clone();
 
     // Create server instance
     let mut server = McpServer::new(config);
-
-    // Set up logging with both standard and MCP subscribers
-    let mcp_subscriber = McpSubscriber::new(Arc::clone(&server.logging_manager));
-
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_target(true)
-                .with_thread_ids(true)
-                .with_line_number(true),
-        )
-        .with(mcp_subscriber)
-        .init();
-
-    // Set initial log level from config
-    server
-        .logging_manager
-        .lock()
-        .await
-        .set_level(logging_level.clone())
-        .await?;
 
     // Register file system provider
     let fs_provider = Arc::new(FileSystemProvider::new(&resources_root_path));
@@ -166,7 +146,6 @@ async fn main() -> Result<(), McpError> {
 
     // List capabilities
     tracing::info!("Enabled capabilities:");
-    tracing::info!("  Logging: enabled (level: {})", logging_level);
     tracing::info!("  Resources:");
     tracing::info!(
         "    - subscribe: {}",

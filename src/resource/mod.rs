@@ -1,11 +1,13 @@
 use async_trait::async_trait;
+use mime::Mime;
 use mime_guess::MimeGuess;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc, path::PathBuf};
 use tokio::sync::RwLock;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use tokio::sync::mpsc;
 
-use crate::error::McpError;
+use crate::{error::McpError, protocol::JsonRpcNotification, NotificationSender};
 
 // Resource Types
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,6 +69,13 @@ pub struct ListTemplatesResponse {
     pub resource_templates: Vec<ResourceTemplate>,
 }
 
+// Add notification types
+#[derive(Debug, Serialize)]
+pub struct ResourceUpdatedNotification {
+    pub uri: String,
+}
+
+
 // Resource Provider trait
 #[async_trait]
 pub trait ResourceProvider: Send + Sync {
@@ -91,6 +100,7 @@ pub struct ResourceManager {
     pub providers: Arc<RwLock<HashMap<String, Arc<dyn ResourceProvider>>>>,
     pub subscriptions: Arc<RwLock<HashMap<String, Vec<String>>>>,
     pub capabilities: ResourceCapabilities,
+    notification_sender: Option<NotificationSender>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,7 +115,12 @@ impl ResourceManager {
             providers: Arc::new(RwLock::new(HashMap::new())),
             subscriptions: Arc::new(RwLock::new(HashMap::new())),
             capabilities,
+            notification_sender: None,
         }
+    }
+
+    pub fn set_notification_sender(&mut self, sender: NotificationSender) {
+        self.notification_sender = Some(sender);
     }
 
     pub async fn register_provider(&self, scheme: String, provider: Arc<dyn ResourceProvider>) {
@@ -191,13 +206,23 @@ impl ResourceManager {
         Ok(())
     }
 
-    pub async fn notify_resource_updated(&self, _uri: &str) -> Result<(), McpError> {
+    pub async fn notify_resource_updated(&self, uri: &str) -> Result<(), McpError> {
         if !self.capabilities.subscribe {
             return Err(McpError::CapabilityNotSupported("subscribe".to_string()));
         }
 
-        // Notification handling would go here
-        // This would typically integrate with your protocol implementation
+        if let Some(sender) = &self.notification_sender {
+            let notification = JsonRpcNotification {
+                jsonrpc: "2.0".to_string(),
+                method: "notifications/resources/updated".to_string(),
+                params: Some(serde_json::to_value(ResourceUpdatedNotification {
+                    uri: uri.to_string(),
+                }).unwrap()),
+            };
+
+            sender.tx.send(notification).await
+                .map_err(|_| McpError::InternalError)?;
+        }
         Ok(())
     }
 
@@ -206,8 +231,16 @@ impl ResourceManager {
             return Err(McpError::CapabilityNotSupported("listChanged".to_string()));
         }
 
-        // List changed notification handling would go here
-        // This would typically integrate with your protocol implementation
+        if let Some(sender) = &self.notification_sender {
+            let notification = JsonRpcNotification {
+                jsonrpc: "2.0".to_string(),
+                method: "notifications/resources/list_changed".to_string(),
+                params: None,
+            };
+
+            sender.tx.send(notification).await
+                .map_err(|_| McpError::InternalError)?;
+        }
         Ok(())
     }
 }
@@ -250,6 +283,101 @@ impl FileSystemProvider {
         // Fallback: Check if content looks like UTF-8 text
         String::from_utf8(content.to_vec()).is_ok()
     }
+
+    fn get_mime_type(&self, path: &PathBuf) -> Option<String> {
+        if path.is_dir() {
+            // For directories, use a standard mime type
+            Some("inode/directory".to_string())
+        } else {
+            MimeGuess::from_path(path)
+                .first()
+                .map(|m| m.to_string())
+                .or_else(|| {
+                    // Fallback to basic types based on extension
+                    path.extension()
+                        .and_then(|ext| ext.to_str())
+                        .map(|ext| match ext.to_lowercase().as_str() {
+                            "txt" => "text/plain",
+                            "json" => "application/json",
+                            "js" => "application/javascript",
+                            "html" | "htm" => "text/html",
+                            "css" => "text/css",
+                            "xml" => "application/xml",
+                            "png" => "image/png",
+                            "jpg" | "jpeg" => "image/jpeg",
+                            "gif" => "image/gif",
+                            "svg" => "image/svg+xml",
+                            _ => "application/octet-stream"
+                        }.to_string())
+                })
+        }
+    }
+
+    fn validate_mime_type(&self, mime_type: &str) -> Result<(), McpError> {
+        match mime_type.parse::<Mime>() {
+            Ok(_) => Ok(()),
+            Err(_) => Err(McpError::InvalidResource("Invalid MIME type format".to_string()))
+        }
+    }
+
+    fn validate_access(&self, path: &PathBuf) -> Result<(), McpError> {
+        // Check if path exists
+        if !path.exists() {
+            return Err(McpError::ResourceNotFound(path.to_string_lossy().to_string()));
+        }
+
+        // Check if we have read permission
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = path.metadata().map_err(|_| McpError::AccessDenied("Cannot read file metadata".to_string()))?;
+            if metadata.mode() & 0o444 == 0 {
+                return Err(McpError::AccessDenied("No read permission".to_string()));
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn read_resource(&self, uri: &str) -> Result<Vec<ResourceContent>, McpError> {
+        let path = self.sanitize_path(uri)?;
+        self.validate_access(&path)?;
+
+        let mime_type = self.get_mime_type(&path)
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+        self.validate_mime_type(&mime_type)?;
+
+        if path.is_dir() {
+            return Ok(vec![ResourceContent {
+                uri: uri.to_string(),
+                mime_type: Some("inode/directory".to_string()),
+                text: None,
+                blob: None,
+            }]);
+        }
+
+        let content = tokio::fs::read(&path).await.map_err(|_| McpError::IoError)?;
+
+        let resource_content = if self.is_text_content(&mime_type, &content) {
+            let text = String::from_utf8(content)
+                .map_err(|_| McpError::InvalidResource("Invalid UTF-8".to_string()))?;
+            ResourceContent {
+                uri: uri.to_string(),
+                mime_type: Some(mime_type),
+                text: Some(text),
+                blob: None,
+            }
+        } else {
+            ResourceContent {
+                uri: uri.to_string(),
+                mime_type: Some(mime_type),
+                text: None,
+                blob: Some(BASE64.encode(&content)),
+            }
+        };
+
+        Ok(vec![resource_content])
+    }
 }
 
 #[async_trait]
@@ -262,7 +390,7 @@ impl ResourceProvider for FileSystemProvider {
             let path = entry.path();
           
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                let mime_type = MimeGuess::from_path(path.clone()).first().as_ref().map(|s| s.to_string());
+                let mime_type = self.get_mime_type(&path);
                    
                 
                 resources.push(Resource {
@@ -285,9 +413,7 @@ impl ResourceProvider for FileSystemProvider {
         }
 
         let content = tokio::fs::read(&path).await.map_err(|_e| McpError::IoError)?;
-        let mime_type = MimeGuess::from_path(&path)
-            .first()
-            .map(|m| m.to_string())
+        let mime_type = self.get_mime_type(&path)
             .unwrap_or_else(|| "application/octet-stream".to_string());
 
         let resource_content = if self.is_text_content(&mime_type, &content) {
@@ -360,5 +486,44 @@ mod tests {
         Ok(())
     }
 
-    
+    // Add new test for image handling
+    #[tokio::test]
+    async fn test_image_resource_loading() -> Result<(), McpError> {
+        let temp_dir = TempDir::new().unwrap();
+        let provider = FileSystemProvider::new(temp_dir.path());
+
+        // Create a small test image
+        let image_path = temp_dir.path().join("test.png");
+        let image_data = vec![0x89, 0x50, 0x4E, 0x47]; // PNG header
+        fs::write(&image_path, &image_data).unwrap();
+
+        let uri = format!("file://{}", image_path.to_string_lossy());
+        let contents = provider.read_resource(&uri).await?;
+        
+        assert_eq!(contents.len(), 1);
+        let content = &contents[0];
+        assert!(content.text.is_none());
+        assert!(content.blob.is_some());
+        assert_eq!(content.mime_type.as_deref(), Some("image/png"));
+
+        Ok(())
+    }
+
+    // Add test for directory handling
+    #[tokio::test]
+    async fn test_directory_handling() -> Result<(), McpError> {
+        let temp_dir = TempDir::new().unwrap();
+        let provider = FileSystemProvider::new(temp_dir.path());
+
+        let uri = format!("file://{}", temp_dir.path().to_string_lossy());
+        let contents = provider.read_resource(&uri).await?;
+        
+        assert_eq!(contents.len(), 1);
+        let content = &contents[0];
+        assert!(content.text.is_none());
+        assert!(content.blob.is_none());
+        assert_eq!(content.mime_type.as_deref(), Some("inode/directory"));
+
+        Ok(())
+    }
 }
