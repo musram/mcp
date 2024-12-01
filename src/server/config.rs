@@ -10,6 +10,7 @@ pub struct ServerConfig {
     pub resources: ResourceSettings,
     pub security: SecuritySettings,
     pub logging: LoggingSettings,
+    pub tools: ToolSettings,  // Add this
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -50,6 +51,16 @@ pub struct LoggingSettings {
     pub level: String,
     pub file: Option<PathBuf>,
     pub format: LogFormat,
+}
+
+// Add new tool settings struct
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ToolSettings {
+    pub enabled: bool,
+    pub require_confirmation: bool,
+    pub allowed_tools: Vec<String>,
+    pub max_execution_time_ms: u64,
+    pub rate_limit: RateLimitSettings,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -99,6 +110,16 @@ impl Default for ServerConfig {
                 level: "info".to_string(),
                 file: None,
                 format: LogFormat::Pretty,
+            },
+            tools: ToolSettings {
+                enabled: true,
+                require_confirmation: true,
+                allowed_tools: vec!["*".to_string()], // Allow all tools by default
+                max_execution_time_ms: 30000, // 30 seconds
+                rate_limit: RateLimitSettings {
+                    requests_per_minute: 30,
+                    burst_size: 5,
+                },
             },
         }
     }

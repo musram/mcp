@@ -247,6 +247,7 @@ impl ResourceProvider for FileSystemProvider {
         
         while let Some(entry) = entries.next_entry().await.map_err(|_e| McpError::IoError)? {
             let path = entry.path();
+          
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                 let mime_type = MimeGuess::from_path(path.clone()).first().as_ref().map(|s| s.to_string());
                    
