@@ -1,5 +1,6 @@
 use clap::Parser;
 use mcp_rs::logging::McpSubscriber;
+use mcp_rs::transport::{SseTransport, StdioTransport};
 use mcp_rs::{
     error::McpError,
     logging::LogLevel,

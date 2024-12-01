@@ -4,22 +4,40 @@ A Rust implementation of the Model Context Protocol (MCP), providing a standardi
 
 ## Quickstart 
 
-For sse transport:
-```rust
-# Terminal 1 - Start server
-cargo run --bin server -- -t sse -p 3000
+### Client
+```
+# List resources
+cargo run --bin client list-resources
 
-# Terminal 2 - Run test client
-cargo test test_sse_client -- --nocapture
+# Read a specific file
+cargo run --bin client read-resource -u "file:///path/to/file"
+
+# Use a prompt
+cargo run --bin client get-prompt -n "code_review" -a '{"code": "fn main() {}", "language": "rust"}'
+
+# Call a tool
+cargo run --bin client call-tool -n "calculator" -a '{"expression": "2 + 2"}'
+
+# Set log level
+cargo run --bin client set-log-level -l "debug"
+
+# Use SSE transport
+cargo run --bin client -t sse -s http://localhost:3000 list-resources
 ```
 
-For STDIO transport:
-```rust
-# Terminal 1 - Start server
-cargo run --bin server -- -t stdio
+### Server
+```
+# Run with stdio transport
+cargo run --bin server
 
-# Terminal 2 - Run CLI client
-cargo run --example cli_client
+# Run with SSE transport on port 3000
+cargo run --bin server -- -t sse -p 3000
+
+# Run with custom workspace
+cargo run --bin server -- -w /path/to/workspace
+
+# Run with config file
+cargo run --bin server -- -c config.json
 ```
 
 

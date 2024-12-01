@@ -37,5 +37,9 @@ tracing-core = "0.1.33"
 name = "server"
 path = "bin/server.rs"
 
+[[bin]]
+name = "client"
+path = "bin/client.rs"
+
 [dev-dependencies]
 tempfile = "3.14.0"

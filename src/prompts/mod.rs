@@ -47,19 +47,19 @@ pub struct PromptResult {
 }
 
 // Request/Response types
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ListPromptsRequest {
     pub cursor: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ListPromptsResponse {
     pub prompts: Vec<Prompt>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct GetPromptRequest {
     pub name: String,
     pub arguments: Option<serde_json::Value>,
