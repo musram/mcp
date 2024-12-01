@@ -65,3 +65,21 @@ impl fmt::Display for McpError {
 }
 
 impl std::error::Error for McpError {}
+
+impl From<serde_json::Error> for McpError {
+    fn from(_error: serde_json::Error) -> Self {
+        McpError::SerializationError
+    }
+}
+
+impl From<std::io::Error> for McpError {
+    fn from(_error: std::io::Error) -> Self {
+        McpError::IoError
+    }
+}
+
+impl From<tokio::time::error::Elapsed> for McpError {
+    fn from(_error: tokio::time::error::Elapsed) -> Self {
+        McpError::RequestTimeout
+    }
+}
