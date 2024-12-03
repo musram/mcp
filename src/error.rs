@@ -6,9 +6,11 @@ pub enum McpError {
     ParseError,
     InvalidRequest(String),
     SerializationError,
+    ShutdownTimeout,
+    ShutdownError(String),
     MethodNotFound,
     InvalidParams,
-    InternalError,
+    InternalError(String),
     NotConnected,
     ConnectionClosed,
     RequestTimeout,
@@ -17,6 +19,7 @@ pub enum McpError {
     AccessDenied(String),
     IoError,
     CapabilityNotSupported(String),
+    ToolExecutionError(String),
     Custom { code: i32, message: String },
 }
 
@@ -28,15 +31,18 @@ impl McpError {
             McpError::SerializationError => -32603,
             McpError::MethodNotFound => -32601,
             McpError::InvalidParams => -32602,
-            McpError::InternalError => -32603,
+            McpError::InternalError(_) => -32603,
             McpError::NotConnected => -32000,
             McpError::ConnectionClosed => -32001,
             McpError::RequestTimeout => -32002,
+            McpError::ShutdownTimeout => -32001,
+            McpError::ShutdownError(_) => -32002,
             McpError::ResourceNotFound(_) => -32003,
             McpError::InvalidResource(_) => -32004,
             McpError::IoError => -32005,
             McpError::CapabilityNotSupported(_) => -32006,
             McpError::AccessDenied(_) => -32007,
+            McpError::ToolExecutionError(_) => -32008,
             McpError::Custom { code, .. } => *code,
         }
     }
@@ -49,7 +55,7 @@ impl fmt::Display for McpError {
             McpError::InvalidRequest(s) => write!(f, "Invalid request: {}", s),
             McpError::MethodNotFound => write!(f, "Method not found"),
             McpError::InvalidParams => write!(f, "Invalid parameters"),
-            McpError::InternalError => write!(f, "Internal error"),
+            McpError::InternalError(s) => write!(f, "Internal error: {}", s),
             McpError::NotConnected => write!(f, "Not connected"),
             McpError::ConnectionClosed => write!(f, "NConnection closed"),
             McpError::RequestTimeout => write!(f, "Request timeout"),
@@ -58,7 +64,10 @@ impl fmt::Display for McpError {
             McpError::ResourceNotFound(s) => write!(f, " {} Resource not found", s),
             McpError::InvalidResource(s) => write!(f, "{} Invalid resource", s),
             McpError::AccessDenied(s) => write!(f, "Access denied: {}", s),
+            McpError::ToolExecutionError(s) => write!(f, "Tool execution error: {}", s),
             McpError::CapabilityNotSupported(s) => write!(f, "Capability not supported: {}", s),
+            McpError::ShutdownTimeout => write!(f, "Shutdown timed out"),
+            McpError::ShutdownError(msg) => write!(f, "Shutdown error: {}", msg),
             McpError::Custom { code, message } => write!(f, "Error {}: {}", code, message),
         }
     }
@@ -73,7 +82,8 @@ impl From<serde_json::Error> for McpError {
 }
 
 impl From<std::io::Error> for McpError {
-    fn from(_error: std::io::Error) -> Self {
+    fn from(error: std::io::Error) -> Self {
+        tracing::error!("IO error: {}", error);
         McpError::IoError
     }
 }

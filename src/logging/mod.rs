@@ -101,6 +101,30 @@ impl LoggingManager {
 
     pub async fn log(&self, message: LogMessage) -> Result<(), McpError> {
         if let Some(sender) = &self.notification_sender {
+            // Skip internal debug logs
+            if matches!(&message.level, LogLevel::Debug) {
+                // Skip if logger is hyper or internal transport
+                if let Some(logger) = &message.logger {
+                    if logger.starts_with("hyper::") || 
+                       logger.starts_with("mcp_rs::transport") {
+                        return Ok(());
+                    }
+                }
+
+                // Skip transport-related messages
+                if message.data.get("message")
+                    .and_then(|m| m.as_str())
+                    .map_or(false, |m| {
+                        m.contains("Broadcasting SSE message") || 
+                        m.contains("Failed to broadcast message") ||
+                        m.contains("-> ") ||
+                        m.contains("<- ")
+                    }) 
+                {
+                    return Ok(());
+                }
+            }
+
             let notification = JsonRpcNotification {
                 jsonrpc: "2.0".to_string(),
                 method: "notifications/message".to_string(),
@@ -111,7 +135,7 @@ impl LoggingManager {
                 .tx
                 .send(notification)
                 .await
-                .map_err(|_| McpError::InternalError)?;
+                .map_err(|e| McpError::InternalError(e.to_string()))?;
         }
         Ok(())
     }

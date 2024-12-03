@@ -1,12 +1,10 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use async_trait::async_trait;
 use serde_json::json;
 use tokio;
 
 use mcp_rs::{
-    tools::{Tool, ToolProvider, ToolResult, ToolContent},
-    error::McpError,
-    server::{McpServer, config::ServerConfig},
+    error::McpError, server::{config::ServerConfig, McpServer}, tools::{Tool, ToolContent, ToolInputSchema, ToolProvider, ToolResult}
 };
 
 // Mock tool provider for testing
@@ -15,21 +13,36 @@ struct MockCalculatorTool;
 #[async_trait]
 impl ToolProvider for MockCalculatorTool {
     async fn get_tool(&self) -> Tool {
+        let mut properties = HashMap::new();
+        properties.insert(
+            "operation".to_string(),
+            json!({
+                "type": "string",
+                "description": "Operation to perform (add, subtract, multiply, divide)"
+            }),
+        );
+        properties.insert(
+            "a".to_string(),
+            json!({
+                "type": "number",
+                "description": "First operand"
+            }),
+        );
+        properties.insert(
+            "b".to_string(),
+            json!({
+                "type": "number",
+                "description": "Second operand"
+            }),
+        );
         Tool {
             name: "calculator".to_string(),
             description: "Performs basic arithmetic operations".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "operation": {
-                        "type": "string",
-                        "enum": ["add", "subtract", "multiply", "divide"]
-                    },
-                    "a": { "type": "number" },
-                    "b": { "type": "number" }
-                },
-                "required": ["operation", "a", "b"]
-            }),
+            input_schema: ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties,
+                required: vec!["operation", "a", "b"].iter().map(|s| s.to_string()).collect(),
+            },
         }
     }
 
@@ -75,7 +88,7 @@ struct CalculatorParams {
 async fn test_tool_registration_and_listing() {
     // Create test server
     let config = ServerConfig::default();
-    let server = McpServer::new(config);
+    let server = McpServer::new(config).await;
     
     // Register mock tool
     let tool_provider = Arc::new(MockCalculatorTool);
@@ -91,7 +104,7 @@ async fn test_tool_registration_and_listing() {
 async fn test_tool_execution() {
     // Create test server
     let config = ServerConfig::default();
-    let server = McpServer::new(config);
+    let server = McpServer::new(config).await;
     
     // Register mock tool
     let tool_provider = Arc::new(MockCalculatorTool);
@@ -134,7 +147,7 @@ async fn test_tool_execution() {
 async fn test_invalid_tool() {
     // Create test server
     let config = ServerConfig::default();
-    let server = McpServer::new(config);
+    let server = McpServer::new(config).await;
 
     // Test calling non-existent tool
     let result = server.tool_manager.call_tool(
@@ -155,7 +168,7 @@ async fn test_invalid_tool() {
 async fn test_invalid_arguments() {
     // Create test server
     let config = ServerConfig::default();
-    let server = McpServer::new(config);
+    let server = McpServer::new(config).await;
     
     // Register mock tool
     let tool_provider = Arc::new(MockCalculatorTool);

@@ -16,7 +16,7 @@ cargo run --bin client read-resource -u "file:///path/to/file"
 cargo run --bin client get-prompt -n "code_review" -a '{"code": "fn main() {}", "language": "rust"}'
 
 # Call a tool
-cargo run --bin client call-tool -n "calculator" -a '{"expression": "2 + 2"}'
+cargo run --bin client -- --server "http://127.0.0.1:3000" call-tool --name "file_system" --args '{\"operation\": \"read_file\", \"path\": \"Config.toml\"}'
 
 # Set log level
 cargo run --bin client set-log-level -l "debug"
@@ -27,19 +27,9 @@ cargo run --bin client -t sse -s http://localhost:3000 list-resources
 
 ### Server
 ```
-# Run with stdio transport
-cargo run --bin server
-
-# Run with SSE transport on port 3000
-cargo run --bin server -- -t sse -p 3000
-
-# Run with custom workspace
-cargo run --bin server -- -w /path/to/workspace
-
-# Run with config file
-cargo run --bin server -- -c config.json
+# Run with test config
+cargo run --bin server -- --config "../servers/test.json"
 ```
-
 
 ## Overview
 

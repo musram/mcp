@@ -221,7 +221,7 @@ impl ResourceManager {
             };
 
             sender.tx.send(notification).await
-                .map_err(|_| McpError::InternalError)?;
+                .map_err(|e| McpError::InternalError(e.to_string()))?;
         }
         Ok(())
     }
@@ -239,7 +239,7 @@ impl ResourceManager {
             };
 
             sender.tx.send(notification).await
-                .map_err(|_| McpError::InternalError)?;
+                .map_err(|e| McpError::InternalError(e.to_string()))?;
         }
         Ok(())
     }

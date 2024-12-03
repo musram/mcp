@@ -1,19 +1,50 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use test_tool::{PingTool, TestTool};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 
 pub mod calculator;
+pub mod file_system;
+pub mod test_tool;
 
 use crate::error::McpError;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolType {
+    Calculator,
+    TestTool,
+    PingTool,
+    FileSystem,
+}
+
+impl ToolType {
+    pub fn to_tool_provider(&self) -> Arc<dyn ToolProvider> {
+        match self {
+            ToolType::Calculator => Arc::new(calculator::CalculatorTool::new()),
+            ToolType::TestTool => Arc::new(TestTool::new()),
+            ToolType::PingTool => Arc::new(PingTool::new()),
+            ToolType::FileSystem => Arc::new(file_system::FileSystemTools::new()),
+        }
+    }
+}
 
 // Tool Types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tool {
     pub name: String,
     pub description: String,
-    pub input_schema: Value,
+    pub input_schema: ToolInputSchema,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ToolInputSchema {
+    #[serde(rename = "type")]
+    pub schema_type: String,
+    pub properties: HashMap<String, Value>,
+    pub required: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
+use crate::{prompts::Prompt, tools::{Tool, ToolType}};
+
 // Server Configuration
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ServerConfig {
@@ -8,7 +10,11 @@ pub struct ServerConfig {
     pub resources: ResourceSettings,
     pub security: SecuritySettings,
     pub logging: LoggingSettings,
-    pub tools: ToolSettings,  // Add this
+    pub tool_settings: ToolSettings,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolType>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub prompts: Vec<Prompt>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -110,6 +116,17 @@ pub enum TransportType {
     WebSocket,
 }
 
+impl From<&str> for TransportType {
+    fn from(s: &str) -> Self {
+        match s {
+            "stdio" => TransportType::Stdio,
+            "sse" => TransportType::Sse,
+            "ws" => TransportType::WebSocket,
+            _ => TransportType::Stdio,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogFormat {
@@ -150,7 +167,7 @@ impl Default for ServerConfig {
                 file: None,
                 format: LogFormat::Pretty,
             },
-            tools: ToolSettings {
+            tool_settings: ToolSettings {
                 enabled: true,
                 require_confirmation: true,
                 allowed_tools: vec!["*".to_string()], // Allow all tools by default
@@ -160,6 +177,8 @@ impl Default for ServerConfig {
                     burst_size: 5,
                 },
             },
+            tools: vec![],
+            prompts: vec![],
         }
     }
 }

@@ -56,14 +56,14 @@ pub struct RequestHandlerExtra {
 
 // Protocol implementation
 pub struct Protocol {
-    cmd_tx: Option<mpsc::Sender<TransportCommand>>,
-    event_rx: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<TransportEvent>>>>,
-    options: ProtocolOptions,
-    request_message_id: Arc<RwLock<u64>>,
-    request_handlers: Arc<RwLock<HashMap<String, RequestHandler>>>,
-    notification_handlers: Arc<RwLock<HashMap<String, NotificationHandler>>>,
-    response_handlers: Arc<RwLock<HashMap<u64, ResponseHandler>>>,
-    progress_handlers: Arc<RwLock<HashMap<u64, ProgressCallback>>>,
+    pub cmd_tx: Option<mpsc::Sender<TransportCommand>>,
+    pub event_rx: Option<Arc<tokio::sync::Mutex<mpsc::Receiver<TransportEvent>>>>,
+    pub options: ProtocolOptions,
+    pub request_message_id: Arc<RwLock<u64>>,
+    pub request_handlers: Arc<RwLock<HashMap<String, RequestHandler>>>,
+    pub notification_handlers: Arc<RwLock<HashMap<String, NotificationHandler>>>,
+    pub response_handlers: Arc<RwLock<HashMap<u64, ResponseHandler>>>,
+    pub progress_handlers: Arc<RwLock<HashMap<u64, ProgressCallback>>>,
     //request_abort_controllers: Arc<RwLock<HashMap<String, tokio::sync::watch::Sender<bool>>>>,
 }
 
@@ -147,91 +147,159 @@ impl ProtocolBuilder {
     }
 }
 
+#[derive(Clone)]
+pub struct ProtocolHandle {
+    inner: Arc<Protocol>,
+    close_tx: mpsc::Sender<()>,
+}
+
+impl ProtocolHandle {
+    pub async fn close(&self) -> Result<(), McpError> {
+        // Send close signal
+        if let Err(_) = self.close_tx.send(()).await {
+            tracing::warn!("Protocol already closed");
+        }
+        
+        // Send close command to transport
+        if let Some(cmd_tx) = &self.inner.cmd_tx {
+            let _ = cmd_tx.send(TransportCommand::Close).await;
+        }
+        Ok(())
+    }
+
+    pub fn get_ref(&self) -> &Protocol {
+        &self.inner
+    }
+}
+
 impl Protocol {
     pub fn builder(options: Option<ProtocolOptions>) -> ProtocolBuilder {
         ProtocolBuilder::new(options).register_default_handlers()
         // Remove the tools/list and tools/call handlers from here
     }
 
-    pub async fn connect<T: Transport>(&mut self, mut transport: T) -> Result<(), McpError> {
+    // Modify connect to return ProtocolHandle
+    pub async fn connect<T: Transport>(&mut self, mut transport: T) -> Result<ProtocolHandle, McpError> {
         let TransportChannels { cmd_tx, event_rx } = transport.start().await?;
-        let cmd_tx_clone = cmd_tx.clone();
-        // Start message handling loop
-        let event_rx_clone = Arc::clone(&event_rx);
+        
+        self.cmd_tx = Some(cmd_tx.clone());
+        self.event_rx = Some(Arc::clone(&event_rx));
+
+        // Create close channel
+        let (close_tx, mut close_rx) = mpsc::channel(1);
+
+        let event_rx = Arc::clone(&event_rx);
         let request_handlers = Arc::clone(&self.request_handlers);
         let notification_handlers = Arc::clone(&self.notification_handlers);
         let response_handlers = Arc::clone(&self.response_handlers);
-        let progress_handlers = Arc::clone(&self.progress_handlers);
+        let cmd_tx = cmd_tx.clone();
 
-        tokio::spawn(async move {
-            loop {
-                let event = {
-                    let mut rx = event_rx_clone.lock().await;
-                    rx.recv().await
-                };
+        // Spawn message handling loop
+        tokio::spawn({
+            let cmd_tx = cmd_tx.clone();
+            async move {
+                loop {
+                    tokio::select! {
+                        _ = close_rx.recv() => {
+                            tracing::debug!("Received close signal");
+                            break;
+                        }
+                        event = async {
+                            let mut rx = event_rx.lock().await;
+                            rx.recv().await
+                        } => {
+                            match event {
+                                Some(TransportEvent::Message(msg)) => {
+                                    // ... existing message handling code ...
+                                    match msg {
+                                        JsonRpcMessage::Request(req) => {
+                                            let handlers = request_handlers.read().await;
+                                            if let Some(handler) = handlers.get(&req.method) {
+                                                let (tx, rx) = tokio::sync::watch::channel(false);
+                                                let extra = RequestHandlerExtra { signal: rx };
 
-                match event {
-                    Some(TransportEvent::Message(msg)) => match msg {
-                        JsonRpcMessage::Request(req) => {
-                            let handlers = request_handlers.read().await;
-                            if let Some(handler) = handlers.get(&req.method) {
-                                // Create abort controller for the request
-                                let (tx, rx) = tokio::sync::watch::channel(false);
-                                let extra = RequestHandlerExtra { signal: rx };
-
-                                // Handle request
-                                let result = handler(req.clone(), extra).await;
-
-                                // Send response
-                                let response = match result {
-                                    Ok(result) => JsonRpcMessage::Response(JsonRpcResponse {
-                                        jsonrpc: "2.0".to_string(),
-                                        id: req.id,
-                                        result: Some(result),
-                                        error: None,
-                                    }),
-                                    Err(e) => JsonRpcMessage::Response(JsonRpcResponse {
-                                        jsonrpc: "2.0".to_string(),
-                                        id: req.id,
-                                        result: None,
-                                        error: Some(JsonRpcError {
-                                            code: e.code(),
-                                            message: e.to_string(),
-                                            data: None,
-                                        }),
-                                    }),
-                                };
-
-                                let _ = cmd_tx.send(TransportCommand::SendMessage(response)).await;
+                                                match handler(req.clone(), extra).await {
+                                                    Ok(result) => {
+                                                        let response = JsonRpcMessage::Response(JsonRpcResponse {
+                                                            jsonrpc: "2.0".to_string(),
+                                                            id: req.id,
+                                                            result: Some(result),
+                                                            error: None,
+                                                        });
+                                                        if let Err(e) = cmd_tx.send(TransportCommand::SendMessage(response)).await {
+                                                            tracing::error!("Failed to send response: {:?}", e);
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        let response = JsonRpcMessage::Response(JsonRpcResponse {
+                                                            jsonrpc: "2.0".to_string(),
+                                                            id: req.id,
+                                                            result: None,
+                                                            error: Some(JsonRpcError {
+                                                                code: e.code(),
+                                                                message: e.to_string(),
+                                                                data: None,
+                                                            }),
+                                                        });
+                                                        if let Err(e) = cmd_tx.send(TransportCommand::SendMessage(response)).await {
+                                                            tracing::error!("Failed to send error response: {:?}", e);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        JsonRpcMessage::Response(resp) => {
+                                            let mut handlers = response_handlers.write().await;
+                                            if let Some(handler) = handlers.remove(&resp.id) {
+                                                handler(Ok(resp));
+                                            }
+                                        }
+                                        JsonRpcMessage::Notification(notif) => {
+                                            let handlers = notification_handlers.read().await;
+                                            if let Some(handler) = handlers.get(&notif.method) {
+                                                if let Err(e) = handler(notif.clone()).await {
+                                                    tracing::error!("Notification handler error: {:?}", e);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                Some(TransportEvent::Error(e)) => {
+                                    tracing::error!("Transport error: {:?}", e);
+                                }
+                                Some(TransportEvent::Closed) | None => {
+                                    break;
+                                }
                             }
                         }
-                        JsonRpcMessage::Response(resp) => {
-                            let mut handlers = response_handlers.write().await;
-                            if let Some(handler) = handlers.remove(&resp.id) {
-                                handler(Ok(resp));
-                            }
-                        }
-                        JsonRpcMessage::Notification(notif) => {
-                            let handlers = notification_handlers.read().await;
-                            if let Some(handler) = handlers.get(&notif.method) {
-                                let _ = handler(notif.clone()).await;
-                            }
-                        }
-                    },
-                    Some(TransportEvent::Error(e)) => {
-                        // Handle transport error
-                        // TODO: Implement error handling
                     }
-                    Some(TransportEvent::Closed) => break,
-                    None => break,
                 }
+
+                // Cleanup on exit
+                let _ = cmd_tx.send(TransportCommand::Close).await;
+                tracing::debug!("Protocol message loop terminated");
             }
         });
 
-        self.cmd_tx = Some(cmd_tx_clone);
-        self.event_rx = Some(event_rx);
+        // Create protocol handle
+        Ok(ProtocolHandle {
+            inner: Arc::new(self.clone()),
+            close_tx,
+        })
+    }
 
-        Ok(())
+    // Add Clone implementation for Protocol
+    pub fn clone(&self) -> Self {
+        Protocol {
+            cmd_tx: self.cmd_tx.clone(),
+            event_rx: self.event_rx.clone(),
+            options: self.options.clone(),
+            request_message_id: Arc::clone(&self.request_message_id),
+            request_handlers: Arc::clone(&self.request_handlers),
+            notification_handlers: Arc::clone(&self.notification_handlers),
+            response_handlers: Arc::clone(&self.response_handlers),
+            progress_handlers: Arc::clone(&self.progress_handlers),
+        }
     }
 
     pub async fn request<Req, Resp>(
@@ -317,13 +385,13 @@ impl Protocol {
                     Ok(Ok(response)) => {
                         match response.result {
                             Some(result) => serde_json::from_value(result).map_err(|_| McpError::InvalidParams),
-                            None => Err(McpError::InternalError),
+                            None => Err(McpError::InternalError("No result in response".to_string())),
                         }
                     }
                     Ok(Err(e)) => Err(e),
                     Err(e) => {
                         tracing::error!("Request failed: {:?}", e);
-                        Err(McpError::InternalError)
+                        Err(McpError::InternalError(e.to_string()))
                     }
                 }
             }

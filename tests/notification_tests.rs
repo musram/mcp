@@ -26,10 +26,16 @@ async fn setup_test_server(notif_tx: mpsc::Sender<JsonRpcNotification>) -> (Arc<
         },
         security: SecuritySettings::default(),
         logging: LoggingSettings::default(),
-        tools: ToolSettings::default(),
+        tool_settings: ToolSettings::default(),
+        tools: vec![],
+        prompts: vec![Prompt {
+            name: "test-prompt".to_string(),
+            description: "Test prompt".to_string(),
+            arguments: vec![],
+        }],
     };
 
-    let mut server = McpServer::new(config);
+    let mut server = McpServer::new(config).await;
     
     // Set up notification sender for all managers
     let notification_sender = NotificationSender {

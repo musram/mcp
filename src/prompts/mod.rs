@@ -153,7 +153,7 @@ impl PromptManager {
             };
 
             sender.tx.send(notification).await
-                .map_err(|_| McpError::InternalError)?;
+                .map_err(|e| McpError::InternalError(format!("Notification error: {}", e)))?;
         }
         Ok(())
     }

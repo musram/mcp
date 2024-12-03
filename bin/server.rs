@@ -1,24 +1,17 @@
 use clap::Parser;
 use mcp_rs::logging::McpSubscriber;
-use mcp_rs::transport::{SseTransport, StdioTransport};
 use mcp_rs::{
     error::McpError,
-    logging::LogLevel,
     prompts::Prompt,
     resource::FileSystemProvider,
     server::{
-        config::{
-            LoggingSettings, ResourceSettings, ServerConfig, ServerSettings, ToolSettings,
-            TransportType,
-        },
+        config::{ResourceSettings, ServerConfig, ServerSettings, TransportType},
         McpServer,
     },
     tools::calculator::CalculatorTool,
 };
 use std::{path::PathBuf, sync::Arc};
-use tracing_subscriber::{
-    fmt::format::FmtSpan, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter,
-};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -36,8 +29,8 @@ struct Args {
     port: u16,
 
     /// Transport type (stdio, sse, ws)
-    #[arg(short, long, default_value = "stdio")]
-    transport: String,
+    #[arg(short, long)]
+    transport: Option<String>,
 }
 
 #[tokio::main]
@@ -49,7 +42,11 @@ async fn main() -> Result<(), McpError> {
     let config = if let Some(config_path) = args.config {
         // Load from file
         let config_str = std::fs::read_to_string(config_path)?;
-        serde_json::from_str(&config_str)?
+        let mut server_config: ServerConfig = serde_json::from_str(&config_str)?;
+        if let Some(transport) = args.transport {
+            server_config.server.transport = TransportType::from(transport.as_str());
+        }
+        server_config
     } else {
         // Create default config with CLI overrides
         let workspace = args.workspace.unwrap_or_else(|| PathBuf::from("."));
@@ -58,12 +55,7 @@ async fn main() -> Result<(), McpError> {
             server: ServerSettings {
                 name: "mcp-server".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
-                transport: match args.transport.as_str() {
-                    "stdio" => TransportType::Stdio,
-                    "sse" => TransportType::Sse,
-                    "ws" => TransportType::WebSocket,
-                    _ => TransportType::Stdio,
-                },
+                transport: TransportType::from(args.transport.as_deref().unwrap_or("stdio")),
                 host: "127.0.0.1".to_string(),
                 port: args.port,
                 max_connections: 100,
@@ -79,23 +71,24 @@ async fn main() -> Result<(), McpError> {
         }
     };
 
+    let transport = config.server.transport.clone();
+
     // Log startup info
     tracing::info!(
-        "Starting MCP server v{} with {} transport on port {}",
+        "Starting MCP server v{} with {} transport",
         config.server.version,
         match config.server.transport {
             TransportType::Stdio => "STDIO",
             TransportType::Sse => "SSE",
             TransportType::WebSocket => "WebSocket",
-        },
-        config.server.port
+        }
     );
 
     let resources_root_path = config.resources.root_path.clone();
     let logging_level = config.logging.level.clone();
 
     // Create server instance
-    let mut server = McpServer::new(config);
+    let mut server = McpServer::new(config).await;
 
     // Set up logging with both standard and MCP subscribers
     let mcp_subscriber = McpSubscriber::new(Arc::clone(&server.logging_manager));
@@ -188,8 +181,42 @@ async fn main() -> Result<(), McpError> {
         server.prompt_manager.capabilities.list_changed
     );
 
-    // Run server
-    server.run().await?;
+    // Start server based on transport type
+    match transport {
+        TransportType::Stdio => {
+            tracing::info!("Starting server with STDIO transport");
+
+            // Run server and wait for shutdown
+            tokio::select! {
+                result = server.run_stdio_transport() => {
+                    if let Err(e) = result {
+                        tracing::error!("Server error: {}", e);
+                    }
+                }
+                _ = tokio::signal::ctrl_c() => {
+                    tracing::info!("Shutting down server...");
+                }
+            }
+        }
+        TransportType::Sse => {
+            tracing::info!("Starting server with SSE transport");
+
+            // Run server and wait for shutdown
+            tokio::select! {
+                result = server.run_sse_transport() => {
+                    if let Err(e) = result {
+                        tracing::error!("Server error: {}", e);
+                    }
+                }
+                _ = tokio::signal::ctrl_c() => {
+                    tracing::info!("Shutting down server...");
+                }
+            }
+        }
+        TransportType::WebSocket => {
+            unimplemented!("WebSocket transport not implemented");
+        }
+    }
 
     Ok(())
 }

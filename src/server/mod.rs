@@ -1,13 +1,15 @@
 use config::ServerConfig;
 use serde::{Deserialize, Serialize};
 use std::{
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
 };
 use tokio::sync::RwLock;
 use tracing::info;
 
-use crate::logging::{LoggingManager, SetLevelRequest};
 use crate::prompts::{GetPromptRequest, ListPromptsRequest, PromptCapabilities, PromptManager};
 use crate::tools::{ToolCapabilities, ToolManager};
 use crate::{
@@ -19,6 +21,10 @@ use crate::{
     tools::{CallToolRequest, ListToolsRequest},
     transport::{SseTransport, StdioTransport},
     NotificationSender,
+};
+use crate::{
+    logging::{LoggingManager, SetLevelRequest},
+    transport::{JsonRpcMessage, TransportCommand},
 };
 use tokio::sync::mpsc;
 
@@ -88,7 +94,7 @@ pub struct McpServer {
 }
 
 impl McpServer {
-    pub fn new(config: ServerConfig) -> Self {
+    pub async fn new(config: ServerConfig) -> Self {
         let resource_capabilities = ResourceCapabilities {
             subscribe: true,
             list_changed: true,
@@ -108,9 +114,18 @@ impl McpServer {
 
         let tool_manager = Arc::new(ToolManager::new(tool_capabilities));
 
+        for tool in config.tools.iter() {
+            tool_manager.register_tool(tool.to_tool_provider()).await;
+        }
+
         let prompt_capabilities = PromptCapabilities { list_changed: true };
 
         let mut prompt_manager = Arc::new(PromptManager::new(prompt_capabilities));
+
+        for prompt in config.prompts.iter() {
+            prompt_manager.register_prompt(prompt.clone()).await;
+        }
+
         Arc::get_mut(&mut prompt_manager)
             .unwrap()
             .set_notification_sender(NotificationSender {
@@ -137,7 +152,7 @@ impl McpServer {
         }
     }
 
-    async fn handle_initialize(
+    pub async fn handle_initialize(
         &self,
         params: InitializeParams,
     ) -> Result<InitializeResult, McpError> {
@@ -182,7 +197,7 @@ impl McpServer {
         Ok(result)
     }
 
-    async fn handle_initialized(&self) -> Result<(), McpError> {
+    pub async fn handle_initialized(&self) -> Result<(), McpError> {
         let mut state = self.state.write().await;
         if *state != ServerState::Initializing {
             return Err(McpError::InvalidRequest(
@@ -193,7 +208,7 @@ impl McpServer {
         Ok(())
     }
 
-    async fn assert_initialized(&self) -> Result<(), McpError> {
+    pub async fn assert_initialized(&self) -> Result<(), McpError> {
         let state = self.state.read().await;
         if *state != ServerState::Running {
             return Err(McpError::InvalidRequest(
@@ -203,96 +218,175 @@ impl McpServer {
         Ok(())
     }
 
-    async fn handle_notifications(
+    pub async fn handle_notifications(
         mut notification_rx: mpsc::Receiver<JsonRpcNotification>,
         protocol: Arc<Protocol>,
     ) {
         while let Some(notification) = notification_rx.recv().await {
-            if let Err(e) = protocol.send_notification(notification).await {
-                tracing::error!("Failed to send notification: {:?}", e);
+            // Skip logging for certain notification types
+            if !notification.method.contains("list_changed") {
+                if let Err(e) = protocol.send_notification(notification).await {
+                    tracing::error!("Failed to send notification: {:?}", e);
+                }
             }
         }
     }
 
-    async fn run_stdio_transport(&mut self) -> Result<(), McpError> {
-        let transport = StdioTransport::new(self.config.server.max_connections);
+    pub async fn run_stdio_transport(&mut self) -> Result<(), McpError> {
+        let transport = StdioTransport::new(None);
         let protocol = Protocol::builder(Some(ProtocolOptions {
             enforce_strict_capabilities: true,
         }));
 
-        // Register resource handlers and build protocol
+        // Build and connect protocol
         let mut protocol = self.register_protocol_handlers(protocol).build();
+        let protocol_handle = protocol.connect(transport).await?;
 
-        // Connect transport
-        protocol.connect(transport).await?;
+        // Create shutdown flag
+        let shutdown_requested = Arc::new(AtomicBool::new(false));
 
-        // Create notification handler
-        let protocol = Arc::new(protocol);
-        let notification_handler = {
-            let protocol = Arc::clone(&protocol);
-            // Take ownership of the receiver
-            let notification_rx = self
-                .notification_rx
-                .take()
-                .ok_or_else(|| McpError::InternalError)?;
-            tokio::spawn(Self::handle_notifications(notification_rx, protocol))
+        let mut notification_rx = self
+            .notification_rx
+            .take()
+            .ok_or_else(|| McpError::InternalError("Missing notification receiver".to_string()))?;
+
+        // Spawn notification handler
+        let notification_task = {
+            let shutdown_requested = Arc::clone(&shutdown_requested);
+            tokio::spawn({
+                let protocol_handle = protocol_handle.clone();
+                async move {
+                    while let Some(notification) = notification_rx.recv().await {
+                        if shutdown_requested.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        if let Err(e) = protocol_handle
+                            .get_ref()
+                            .send_notification(notification)
+                            .await
+                        {
+                            tracing::error!("Failed to send notification: {:?}", e);
+                        }
+                    }
+                }
+            })
         };
 
-        // Keep the server running
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                tracing::info!("Received shutdown signal");
-            }
-            _ = notification_handler => {
-                tracing::error!("Notification handler terminated");
-            }
-        }
+        // Create shutdown signal handler
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            tokio::signal::ctrl_c().await.ok();
+            let _ = shutdown_tx.send(());
+        });
 
-        Ok(())
+        // Run main loop
+        let shutdown_result = tokio::select! {
+            _ = shutdown_rx => {
+                tracing::info!("Received shutdown signal");
+                Ok(())
+            }
+            result = notification_task => {
+                match result {
+                    Ok(_) => Ok(()),
+                    Err(e) => Err(McpError::InternalError(format!("Notification task failed: {:?}", e)))
+                }
+            }
+        };
+
+        // Perform graceful shutdown
+        shutdown_requested.store(true, Ordering::SeqCst);
+        *self.state.write().await = ServerState::ShuttingDown;
+
+        // Close protocol through handle
+        protocol_handle.close().await?;
+
+        // Cleanup
+        self.notification_rx = None;
+
+        tracing::info!("Server shutdown completed");
+        shutdown_result
     }
 
-    async fn run_sse_transport(&mut self) -> Result<(), McpError> {
+    pub async fn run_sse_transport(&mut self) -> Result<(), McpError> {
         let transport = SseTransport::new_server(
             self.config.server.host.clone(),
             self.config.server.port,
-            self.config.server.max_connections,
+            4096,
         );
         let protocol = Protocol::builder(Some(ProtocolOptions {
             enforce_strict_capabilities: true,
         }));
 
-        // Register resource handlers and build protocol
+        // Build and connect protocol
         let mut protocol = self.register_protocol_handlers(protocol).build();
+        let protocol_handle = protocol.connect(transport).await?;
 
-        // Connect transport
-        protocol.connect(transport).await?;
+        // Create shutdown flag
+        let shutdown_requested = Arc::new(AtomicBool::new(false));
 
-        // Create notification handler
-        let protocol = Arc::new(protocol);
-        let notification_handler = {
-            let protocol = Arc::clone(&protocol);
-            // Take ownership of the receiver
-            let notification_rx = self
-                .notification_rx
-                .take()
-                .ok_or_else(|| McpError::InternalError)?;
-            tokio::spawn(Self::handle_notifications(notification_rx, protocol))
+        let mut notification_rx = self
+            .notification_rx
+            .take()
+            .ok_or_else(|| McpError::InternalError("Missing notification receiver".to_string()))?;
+
+        // Spawn notification handler
+        let notification_task = {
+            let shutdown_requested = Arc::clone(&shutdown_requested);
+            tokio::spawn({
+                let protocol_handle = protocol_handle.clone();
+                async move {
+                    while let Some(notification) = notification_rx.recv().await {
+                        if shutdown_requested.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        if let Err(e) = protocol_handle
+                            .get_ref()
+                            .send_notification(notification)
+                            .await
+                        {
+                            tracing::error!("Failed to send notification: {:?}", e);
+                        }
+                    }
+                }
+            })
         };
 
-        // Keep the server running
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                tracing::info!("Received shutdown signal");
-            }
-            _ = notification_handler => {
-                tracing::error!("Notification handler terminated");
-            }
-        }
+        // Create shutdown signal handler
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            tokio::signal::ctrl_c().await.ok();
+            let _ = shutdown_tx.send(());
+        });
 
-        Ok(())
+        // Run main loop
+        let shutdown_result = tokio::select! {
+            _ = shutdown_rx => {
+                tracing::info!("Received shutdown signal");
+                Ok(())
+            }
+            result = notification_task => {
+                match result {
+                    Ok(_) => Ok(()),
+                    Err(e) => Err(McpError::InternalError(format!("Notification task failed: {:?}", e)))
+                }
+            }
+        };
+
+        // Perform graceful shutdown
+        shutdown_requested.store(true, Ordering::SeqCst);
+        *self.state.write().await = ServerState::ShuttingDown;
+
+        // Close protocol through handle
+        protocol_handle.close().await?;
+
+        // Cleanup
+        self.notification_rx = None;
+
+        tracing::info!("Server shutdown completed");
+        shutdown_result
     }
 
-    fn register_resource_handlers(&self, builder: ProtocolBuilder) -> ProtocolBuilder {
+    pub fn register_resource_handlers(&self, builder: ProtocolBuilder) -> ProtocolBuilder {
         // Clone Arc references once at the beginning
         let resource_manager = Arc::clone(&self.resource_manager);
         let tool_manager = Arc::clone(&self.tool_manager);
@@ -398,12 +492,16 @@ impl McpServer {
             "tools/call",
             Box::new(move |request, _extra| {
                 let tm = Arc::clone(&tool_manager);
+                println!("Request: {:?}", request);
                 Box::pin(async move {
                     let params: CallToolRequest =
                         serde_json::from_value(request.params.unwrap()).unwrap();
                     tm.call_tool(&params.name, params.arguments)
                         .await
-                        .map(|response| serde_json::to_value(response).unwrap())
+                        .map(|response| {
+                            println!("Response: {:?}", response);
+                            serde_json::to_value(response).unwrap()
+                        })
                         .map_err(|e| e.into())
                 })
             }),
@@ -463,7 +561,22 @@ impl McpServer {
         builder
     }
 
-    fn register_protocol_handlers(&self, builder: ProtocolBuilder) -> ProtocolBuilder {
+    // Add this method to handle shutdown requests
+    fn register_shutdown_handlers(&self, builder: ProtocolBuilder) -> ProtocolBuilder {
+        let builder = builder.with_request_handler(
+            "shutdown",
+            Box::new(move |_request, _extra| {
+                Box::pin(async move {
+                    // Return success and then send ack notification
+                    Ok(serde_json::json!({}))
+                })
+            }),
+        );
+
+        builder
+    }
+
+    pub fn register_protocol_handlers(&self, builder: ProtocolBuilder) -> ProtocolBuilder {
         // Clone required components for initialize handler
         let state = Arc::clone(&self.state);
         let supported_versions = self.supported_versions.clone();
@@ -482,6 +595,7 @@ impl McpServer {
                 let server_info = server_info.clone();
 
                 Box::pin(async move {
+                    tracing::debug!("Handling initialize request");
                     let params: InitializeParams = serde_json::from_value(request.params.unwrap())?;
 
                     // Verify state
@@ -544,42 +658,27 @@ impl McpServer {
         );
 
         // Chain with existing handlers
-        self.register_resource_handlers(builder)
-    }
+        let builder = self.register_resource_handlers(builder);
+        let builder = self.register_shutdown_handlers(builder);
 
-    pub async fn run(&mut self) -> Result<(), McpError> {
-        let protocol = Protocol::builder(Some(ProtocolOptions {
-            enforce_strict_capabilities: true,
-        }));
+        // Chain with notification handler for shutdown acknowledgment
+        let notification_tx = self.notification_tx.clone();
+        let builder = builder.with_notification_handler(
+            "shutdown",
+            Box::new(move |_notification| {
+                let notification_tx = notification_tx.clone();
+                Box::pin(async move {
+                    let ack = JsonRpcNotification {
+                        jsonrpc: "2.0".to_string(),
+                        method: "shutdown/ack".to_string(),
+                        params: None,
+                    };
+                    let _ = notification_tx.send(ack).await;
+                    Ok(())
+                })
+            }),
+        );
 
-        let mut protocol = self.register_protocol_handlers(protocol).build();
-
-        match &self.config.server.transport {
-            config::TransportType::Stdio => {
-                info!("Starting server with STDIO transport");
-                let transport = StdioTransport::new(self.config.server.max_connections);
-                protocol.connect(transport).await?;
-            }
-            config::TransportType::Sse => {
-                info!("Starting server with SSE transport");
-                let transport = SseTransport::new_server(
-                    self.config.server.host.clone(),
-                    self.config.server.port,
-                    self.config.server.max_connections,
-                );
-                protocol.connect(transport).await?;
-            }
-            config::TransportType::WebSocket => {
-                unimplemented!("WebSocket transport not implemented")
-            }
-        }
-
-        // Keep server running until shutdown
-        tokio::signal::ctrl_c().await?;
-
-        // Update state
-        *self.state.write().await = ServerState::ShuttingDown;
-
-        Ok(())
+        builder
     }
 }
