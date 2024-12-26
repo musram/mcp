@@ -1,4 +1,5 @@
 use std::fmt;
+use tokio::sync::mpsc::error::SendError;
 
 // Core error types
 #[derive(Debug)]
@@ -91,5 +92,11 @@ impl From<std::io::Error> for McpError {
 impl From<tokio::time::error::Elapsed> for McpError {
     fn from(_error: tokio::time::error::Elapsed) -> Self {
         McpError::RequestTimeout
+    }
+}
+
+impl<T> From<SendError<T>> for McpError {
+    fn from(_: SendError<T>) -> Self {
+        McpError::ConnectionClosed
     }
 }

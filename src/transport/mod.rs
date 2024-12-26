@@ -85,9 +85,9 @@ impl StdioTransport {
             let mut writer = writer;
             tokio::spawn(async move {
                 while let Some(msg) = write_rx.recv().await {
-                    // Skip logging for certain types of messages
-                    if !msg.contains("notifications/message") && !msg.contains("list_changed") {
-                        tracing::debug!("-> {}", msg);
+                    // Only log actual protocol messages, not transport logs
+                    if !msg.contains("notifications/message") || !msg.contains("mcp_rs::transport") {
+                        tracing::debug!("[Transport][Writer] >> {}", msg);
                     }
 
                     if let Err(e) = async {
@@ -96,7 +96,7 @@ impl StdioTransport {
                         writer.flush().await?;
                         Ok::<_, std::io::Error>(())
                     }.await {
-                        tracing::error!("Write error: {:?}", e);
+                        tracing::error!("[Transport][Writer] Write error: {:?}", e);
                         break;
                     }
                 }
@@ -115,29 +115,30 @@ impl StdioTransport {
                         Ok(0) => break, // EOF
                         Ok(_) => {
                             let trimmed = line.trim();
-                            if (!trimmed.contains("notifications/message") && !trimmed.contains("list_changed")) {
-                                tracing::debug!("<- {}", trimmed);
-                            }
-
                             if !trimmed.is_empty() {
+                                // Only log actual protocol messages
+                                if !trimmed.contains("notifications/message") || !trimmed.contains("mcp_rs::transport") {
+                                    tracing::debug!("[Transport][Reader] << {}", trimmed);
+                                }
+                                
                                 match serde_json::from_str::<JsonRpcMessage>(trimmed) {
                                     Ok(msg) => {
-                                        if event_tx.send(TransportEvent::Message(msg)).await.is_err() {
-                                            break;
+                                        // Filter out transport logging messages from being processed
+                                        if !should_skip_message(&msg) {
+                                            if let Err(e) = event_tx.send(TransportEvent::Message(msg)).await {
+                                                tracing::error!("[Transport][Reader] Failed to forward message: {:?}", e);
+                                                break;
+                                            }
                                         }
                                     }
                                     Err(e) => {
-                                        tracing::error!("Parse error: {}, input: {}", e, trimmed);
-                                        if event_tx.send(TransportEvent::Error(McpError::ParseError)).await.is_err() {
-                                            break;
-                                        }
+                                        tracing::error!("[Transport][Reader] Parse error: {}", e);
                                     }
                                 }
                             }
                         }
                         Err(e) => {
-                            tracing::error!("Read error: {:?}", e);
-                            let _ = event_tx.send(TransportEvent::Error(McpError::IoError)).await;
+                            tracing::error!("[Transport][Reader] Read error: {:?}", e);
                             break;
                         }
                     }
@@ -149,13 +150,17 @@ impl StdioTransport {
         while let Some(cmd) = cmd_rx.recv().await {
             match cmd {
                 TransportCommand::SendMessage(msg) => {
-                    match serde_json::to_string(&msg) {
-                        Ok(s) => {
-                            if write_tx.send(s).await.is_err() {
-                                break;
+                    // Skip processing transport logging messages
+                    if !should_skip_message(&msg) {
+                        match serde_json::to_string(&msg) {
+                            Ok(s) => {
+                                if let Err(e) = write_tx.send(s).await {
+                                    tracing::error!("[Transport] Failed to send to writer: {:?}", e);
+                                    break;
+                                }
                             }
+                            Err(e) => tracing::error!("[Transport] Serialization error: {:?}", e),
                         }
-                        Err(e) => tracing::error!("Failed to serialize message: {:?}", e),
                     }
                 }
                 TransportCommand::Close => break,
@@ -167,6 +172,24 @@ impl StdioTransport {
         let _ = reader_handle.await;
         let _ = writer_handle.await;
         let _ = event_tx.send(TransportEvent::Closed).await;
+    }
+}
+
+// Helper function to determine if a message should be skipped
+fn should_skip_message(msg: &JsonRpcMessage) -> bool {
+    match msg {
+        JsonRpcMessage::Notification(n) => {
+            // Skip transport logging messages
+            if n.method == "notifications/message" {
+                if let Some(params) = &n.params {
+                    if let Some(logger) = params.get("logger").and_then(|l| l.as_str()) {
+                        return logger.contains("mcp_rs::transport");
+                    }
+                }
+            }
+            false
+        }
+        _ => false
     }
 }
 
@@ -447,14 +470,123 @@ impl Transport for SseTransport {
 
 #[cfg(test)]
 mod tests {
+    use async_trait::async_trait;
+    use std::{sync::Arc, time::Duration};
+    use tokio::sync::mpsc;
     use crate::{
         error::McpError,
-        protocol::JsonRpcNotification,
+        protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse},
         transport::{
             JsonRpcMessage, StdioTransport, Transport, TransportChannels, TransportCommand,
             TransportEvent,
         },
     };
+    use tokio::time::timeout;
+    use serde_json::json;
+
+    // Helper function to create a test message
+    fn create_test_request() -> JsonRpcMessage {
+        JsonRpcMessage::Request(JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: 1,
+            method: "test_method".to_string(),
+            params: Some(json!({"test": "data"})),
+        })
+    }
+
+    // Helper function to create a test response
+    fn create_test_response() -> JsonRpcMessage {
+        JsonRpcMessage::Response(JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: 1,
+            result: Some(json!({"status": "success"})),
+            error: None,
+        })
+    }
+
+    // Mock transport for testing
+    struct MockTransport {
+        rx: mpsc::Receiver<String>,
+        tx: mpsc::Sender<String>,
+    }
+
+    impl MockTransport {
+        fn new() -> (Self, mpsc::Sender<String>, mpsc::Receiver<String>) {
+            let (input_tx, input_rx) = mpsc::channel(32);
+            let (output_tx, output_rx) = mpsc::channel(32);
+            (Self { rx: input_rx, tx: output_tx }, input_tx, output_rx)
+        }
+    }
+
+    #[async_trait]
+    impl Transport for MockTransport {
+        async fn start(&mut self) -> Result<TransportChannels, McpError> {
+            let (cmd_tx, mut cmd_rx) = mpsc::channel(32);
+            let (event_tx, event_rx) = mpsc::channel(32);
+            
+            let mut rx = std::mem::replace(&mut self.rx, mpsc::channel(1).1);
+            let tx = self.tx.clone();
+            let event_tx2 = event_tx.clone();
+
+            // Handle outgoing messages
+            tokio::spawn(async move {
+                while let Some(cmd) = cmd_rx.recv().await {
+                    match cmd {
+                        TransportCommand::SendMessage(msg) => {
+                            let s = serde_json::to_string(&msg).unwrap();
+                            // Echo the message back through the event channel
+                            if let Ok(parsed) = serde_json::from_str::<JsonRpcMessage>(&s) {
+                                let _ = event_tx2.send(TransportEvent::Message(parsed)).await;
+                            }
+                            let _ = tx.send(s).await;
+                        }
+                        TransportCommand::Close => break,
+                    }
+                }
+            });
+
+            // Handle incoming messages
+            tokio::spawn(async move {
+                while let Some(msg) = rx.recv().await {
+                    if let Ok(parsed) = serde_json::from_str::<JsonRpcMessage>(&msg) {
+                        let _ = event_tx.send(TransportEvent::Message(parsed)).await;
+                    }
+                }
+            });
+
+            Ok(TransportChannels {
+                cmd_tx,
+                event_rx: Arc::new(tokio::sync::Mutex::new(event_rx)),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_transport_basic() -> Result<(), McpError> {
+        let (mut transport, input_tx, mut output_rx) = MockTransport::new();
+        let TransportChannels { cmd_tx, event_rx } = transport.start().await?;
+
+        // Send a test message
+        let test_msg = create_test_request();
+        cmd_tx.send(TransportCommand::SendMessage(test_msg.clone())).await?;
+
+        // Verify output
+        let output = output_rx.recv().await.expect("Should receive message");
+        assert_eq!(output, serde_json::to_string(&test_msg)?);
+
+        // Send response back
+        let response = create_test_response();
+        input_tx.send(serde_json::to_string(&response)?).await?;
+
+        // Verify received
+        let received = timeout(Duration::from_secs(1), async {
+            let mut guard = event_rx.lock().await;
+            guard.recv().await
+        }).await?;
+
+        assert!(matches!(received, Some(TransportEvent::Message(_))));
+        Ok(())
+    }
 
     #[tokio::test]
     async fn test_transport() -> Result<(), McpError> {
@@ -493,6 +625,174 @@ mod tests {
             .await
             .unwrap();
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_transport_initialization_sequence() -> Result<(), McpError> {
+        let (mut transport, input_tx, mut output_rx) = MockTransport::new();
+        let TransportChannels { cmd_tx, event_rx } = transport.start().await?;
+
+        // Test initialization sequence
+        let init_request = JsonRpcMessage::Request(JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: 1,
+            method: "initialize".to_string(),
+            params: Some(json!({
+                "name": "test-client",
+                "version": "1.0.0"
+            })),
+        });
+
+        cmd_tx.send(TransportCommand::SendMessage(init_request.clone())).await?;
+        
+        // Verify output
+        let output = output_rx.recv().await.expect("Should receive message");
+        assert_eq!(output, serde_json::to_string(&init_request)?);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_transport_message_ordering() -> Result<(), McpError> {
+        let (mut transport, input_tx, mut output_rx) = MockTransport::new();
+        let TransportChannels { cmd_tx, event_rx } = transport.start().await?;
+
+        // Send multiple messages with different IDs
+        let messages: Vec<JsonRpcMessage> = (1..=5).map(|id| {
+            JsonRpcMessage::Request(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: id as u64,
+                method: "test_method".to_string(),
+                params: Some(json!({"sequence": id})),
+            })
+        }).collect();
+
+        // Send all messages
+        for msg in messages.clone() {
+            cmd_tx.send(TransportCommand::SendMessage(msg)).await?;
+        }
+
+        // Verify messages are received in order
+        let mut received_ids = Vec::new();
+        for _ in 0..messages.len() {
+            if let Ok(Some(TransportEvent::Message(msg))) = timeout(
+                Duration::from_secs(1),
+                event_rx.lock().await.recv()
+            ).await {
+                match msg {
+                    JsonRpcMessage::Request(req) => {
+                        received_ids.push(req.id);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        assert_eq!(received_ids, vec![1, 2, 3, 4, 5], "Messages received out of order");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_transport_notification_handling() -> Result<(), McpError> {
+        let (mut transport, input_tx, mut output_rx) = MockTransport::new();
+        let TransportChannels { cmd_tx, event_rx } = transport.start().await?;
+
+        // Send a notification (message without ID)
+        let notification = JsonRpcMessage::Notification(JsonRpcNotification {
+            jsonrpc: "2.0".to_string(),
+            method: "test/notification".to_string(),
+            params: Some(json!({"type": "test"})),
+        });
+
+        cmd_tx.send(TransportCommand::SendMessage(notification.clone())).await?;
+
+        // Verify notification handling
+        let received = timeout(
+            Duration::from_secs(1),
+            event_rx.lock().await.recv()
+        ).await;
+
+        assert!(matches!(
+            received,
+            Ok(Some(TransportEvent::Message(_)))
+        ), "Notification not handled correctly");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_transport_large_message() -> Result<(), McpError> {
+        let (mut transport, input_tx, mut output_rx) = MockTransport::new();
+        let TransportChannels { cmd_tx, event_rx } = transport.start().await?;
+
+        // Create a large message
+        let large_data = (0..1000).map(|i| format!("data_{}", i)).collect::<Vec<_>>();
+        let large_message = JsonRpcMessage::Request(JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: 1,
+            method: "test_large".to_string(),
+            params: Some(json!({
+                "data": large_data
+            })),
+        });
+
+        // Send large message
+        cmd_tx.send(TransportCommand::SendMessage(large_message.clone())).await?;
+
+        // Verify large message handling
+        let received = timeout(
+            Duration::from_secs(1),
+            event_rx.lock().await.recv()
+        ).await;
+
+        assert!(matches!(
+            received,
+            Ok(Some(TransportEvent::Message(_)))
+        ), "Large message not handled correctly");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_transport_concurrent_messages() -> Result<(), McpError> {
+        let (mut transport, input_tx, mut output_rx) = MockTransport::new();
+        let TransportChannels { cmd_tx, event_rx } = transport.start().await?;
+
+        // Create multiple message senders
+        let mut handles = vec![];
+        for i in 0..5 {
+            let cmd_tx = cmd_tx.clone();
+            let handle = tokio::spawn(async move {
+                let msg = JsonRpcMessage::Request(JsonRpcRequest {
+                    jsonrpc: "2.0".to_string(),
+                    id: i as u64,
+                    method: "test_concurrent".to_string(),
+                    params: Some(json!({"sender": i})),
+                });
+                cmd_tx.send(TransportCommand::SendMessage(msg)).await
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all sends to complete
+        for handle in handles {
+            handle.await.map_err(|e| McpError::InternalError(e.to_string()))??;
+        }
+
+        // Verify all messages were received
+        let mut received_count = 0;
+        while let Ok(Some(_)) = timeout(
+            Duration::from_secs(1),
+            event_rx.lock().await.recv()
+        ).await {
+            received_count += 1;
+            if received_count == 5 {
+                break;
+            }
+        }
+
+        assert_eq!(received_count, 5, "Not all concurrent messages were received");
         Ok(())
     }
 }

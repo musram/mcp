@@ -1,0 +1,165 @@
+warning: unused imports: `Mutex` and `time::Duration`
+ --> src/server/mod.rs:6:14
+  |
+6 |         Arc, Mutex,
+  |              ^^^^^
+7 |     },
+8 |     time::Duration,
+  |     ^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: unused import: `tracing::info`
+  --> src/server/mod.rs:11:5
+   |
+11 | use tracing::info;
+   |     ^^^^^^^^^^^^^
+
+warning: unused imports: `JsonRpcMessage` and `TransportCommand`
+  --> src/server/mod.rs:27:17
+   |
+27 |     transport::{JsonRpcMessage, TransportCommand},
+   |                 ^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^
+
+warning: unused import: `Tool`
+ --> src/server/config.rs:4:38
+  |
+4 | use crate::{prompts::Prompt, tools::{Tool, ToolType}};
+  |                                      ^^^^
+
+warning: unused import: `jsonrpc_core::request`
+ --> src/transport/mod.rs:3:5
+  |
+3 | use jsonrpc_core::request;
+  |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `reqwest::RequestBuilder`
+ --> src/transport/mod.rs:4:5
+  |
+4 | use reqwest::RequestBuilder;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `broadcast`
+  --> src/transport/mod.rs:17:12
+   |
+17 |     sync::{broadcast, mpsc},
+   |            ^^^^^^^^^
+
+warning: unused import: `tokio::sync::mpsc`
+ --> src/resource/mod.rs:8:5
+  |
+8 | use tokio::sync::mpsc;
+  |     ^^^^^^^^^^^^^^^^^
+
+warning: unused import: `Future`
+ --> src/tools/file_system/read.rs:3:37
+  |
+3 | use futures::future::{try_join_all, Future};
+  |                                     ^^^^^^
+
+warning: unnecessary parentheses around `if` condition
+  --> src/tools/file_system/mod.rs:57:16
+   |
+57 |             if (normalized.starts_with(allowed_dir)) {
+   |                ^                                   ^
+   |
+   = note: `#[warn(unused_parens)]` on by default
+help: remove these parentheses
+   |
+57 -             if (normalized.starts_with(allowed_dir)) {
+57 +             if normalized.starts_with(allowed_dir) {
+   |
+
+warning: unused import: `server`
+ --> src/tools/test_tool.rs:3:30
+  |
+3 | use crate::{error::McpError, server};
+  |                              ^^^^^^
+
+warning: unused import: `JsonRpcNotification`
+ --> src/client/mod.rs:7:16
+  |
+7 |     protocol::{JsonRpcNotification, Protocol, ProtocolHandle, ProtocolOptions},
+  |                ^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `tx`
+   --> src/protocol/mod.rs:218:54
+    |
+218 | ...                   let (tx, rx) = tokio::sync::watch::channel(false);
+    |                            ^^ help: if this is intentional, prefix it with an underscore: `_tx`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `method`
+   --> src/protocol/mod.rs:462:44
+    |
+462 |     fn assert_capability_for_method(&self, method: &str) -> Result<(), McpError> {
+    |                                            ^^^^^^ help: if this is intentional, prefix it with an underscore: `_method`
+
+warning: unused variable: `method`
+   --> src/protocol/mod.rs:467:46
+    |
+467 |     fn assert_notification_capability(&self, method: &str) -> Result<(), McpError> {
+    |                                              ^^^^^^ help: if this is intentional, prefix it with an underscore: `_method`
+
+warning: unused variable: `method`
+   --> src/protocol/mod.rs:472:49
+    |
+472 |     fn assert_request_handler_capability(&self, method: &str) -> Result<(), McpError> {
+    |                                                 ^^^^^^ help: if this is intentional, prefix it with an underscore: `_method`
+
+warning: unused variable: `arguments`
+  --> src/tools/test_tool.rs:34:29
+   |
+34 |     async fn execute(&self, arguments: serde_json::Value) -> Result<ToolResult, McpError> {
+   |                             ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_arguments`
+
+warning: methods `validate_mime_type`, `validate_access`, and `read_resource` are never used
+   --> src/resource/mod.rs:316:8
+    |
+254 | impl FileSystemProvider {
+    | ----------------------- methods in this implementation
+...
+316 |     fn validate_mime_type(&self, mime_type: &str) -> Result<(), McpError> {
+    |        ^^^^^^^^^^^^^^^^^^
+...
+323 |     fn validate_access(&self, path: &PathBuf) -> Result<(), McpError> {
+    |        ^^^^^^^^^^^^^^^
+...
+342 |     async fn read_resource(&self, uri: &str) -> Result<Vec<ResourceContent>, McpError> {
+    |              ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` on by default
+
+warning: field `capabilities` is never read
+  --> src/logging/mod.rs:71:5
+   |
+68 | pub struct LoggingManager {
+   |            -------------- field in this struct
+...
+71 |     capabilities: LoggingCapabilities,
+   |     ^^^^^^^^^^^^
+
+warning: `mcp_rs` (lib) generated 19 warnings (run `cargo fix --lib -p mcp_rs` to apply 12 suggestions)
+   Compiling mcp_rs v0.1.0 (/home/munusairamesh/software/codes/rust/mcp)
+warning: unused imports: `EnvFilter`, `fmt::format::FmtSpan`, and `layer::SubscriberExt`
+  --> bin/client.rs:9:5
+   |
+9  |     fmt::format::FmtSpan,
+   |     ^^^^^^^^^^^^^^^^^^^^
+10 |     EnvFilter,
+   |     ^^^^^^^^^
+11 |     layer::SubscriberExt,
+   |     ^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+warning: unused import: `util::SubscriberInitExt`
+  --> bin/client.rs:12:5
+   |
+12 |     util::SubscriberInitExt,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `mcp_rs` (bin "client") generated 2 warnings (run `cargo fix --bin "client"` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.58s
+     Running `target/debug/client list-resources`

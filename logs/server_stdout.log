@@ -1,0 +1,22 @@
+[2m2024-12-25T20:09:21.073788Z[0m [32m INFO[0m ThreadId(01) [2mserver[0m[2m:[0m [2m162:[0m Enabled capabilities:
+[2m2024-12-25T20:09:21.073995Z[0m [32m INFO[0m ThreadId(01) [2mserver[0m[2m:[0m [2m163:[0m   Logging: enabled (level: info)
+[2m2024-12-25T20:09:21.074028Z[0m [32m INFO[0m ThreadId(01) [2mserver[0m[2m:[0m [2m164:[0m   Resources:
+[2m2024-12-25T20:09:21.074049Z[0m [32m INFO[0m ThreadId(01) [2mserver[0m[2m:[0m [2m165:[0m     - subscribe: true
+[2m2024-12-25T20:09:21.074075Z[0m [32m INFO[0m ThreadId(01) [2mserver[0m[2m:[0m [2m169:[0m     - listChanged: true
+[2m2024-12-25T20:09:21.074095Z[0m [32m INFO[0m ThreadId(01) [2mserver[0m[2m:[0m [2m173:[0m   Tools:
+[2m2024-12-25T20:09:21.074115Z[0m [32m INFO[0m ThreadId(01) [2mserver[0m[2m:[0m [2m174:[0m     - listChanged: true
+[2m2024-12-25T20:09:21.074140Z[0m [32m INFO[0m ThreadId(01) [2mserver[0m[2m:[0m [2m178:[0m   Prompts:
+[2m2024-12-25T20:09:21.074160Z[0m [32m INFO[0m ThreadId(01) [2mserver[0m[2m:[0m [2m179:[0m     - listChanged: true
+[2m2024-12-25T20:09:21.074181Z[0m [32m INFO[0m ThreadId(01) [2mserver[0m[2m:[0m [2m187:[0m Starting server with STDIO transport
+{"jsonrpc":"2.0","method":"notifications/prompts/list_changed","params":null}
+{"jsonrpc":"2.0","method":"notifications/prompts/list_changed","params":null}
+{"jsonrpc":"2.0","method":"notifications/message","params":{"data":{"message":"Enabled capabilities:"},"level":"info","logger":"server"}}
+{"jsonrpc":"2.0","method":"notifications/message","params":{"data":{"message":"  Logging: enabled (level: info)"},"level":"info","logger":"server"}}
+{"jsonrpc":"2.0","method":"notifications/message","params":{"data":{"message":"  Resources:"},"level":"info","logger":"server"}}
+{"jsonrpc":"2.0","method":"notifications/message","params":{"data":{"message":"    - subscribe: true"},"level":"info","logger":"server"}}
+{"jsonrpc":"2.0","method":"notifications/message","params":{"data":{"message":"    - listChanged: true"},"level":"info","logger":"server"}}
+{"jsonrpc":"2.0","method":"notifications/message","params":{"data":{"message":"  Tools:"},"level":"info","logger":"server"}}
+{"jsonrpc":"2.0","method":"notifications/message","params":{"data":{"message":"    - listChanged: true"},"level":"info","logger":"server"}}
+{"jsonrpc":"2.0","method":"notifications/message","params":{"data":{"message":"  Prompts:"},"level":"info","logger":"server"}}
+{"jsonrpc":"2.0","method":"notifications/message","params":{"data":{"message":"    - listChanged: true"},"level":"info","logger":"server"}}
+{"jsonrpc":"2.0","method":"notifications/message","params":{"data":{"message":"Starting server with STDIO transport"},"level":"info","logger":"server"}}

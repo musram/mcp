@@ -1,0 +1,24 @@
+2024-12-25T20:04:52.941548Z  INFO bin/client.rs:104: Creating STDIO transport
+2024-12-25T20:04:52.941614Z  INFO bin/client.rs:107: Connecting to transport
+2024-12-25T20:04:52.941841Z  INFO bin/client.rs:109: Transport connected
+2024-12-25T20:04:52.941866Z  INFO bin/client.rs:112: Starting initialization
+2024-12-25T20:05:22.943308Z ERROR bin/client.rs:128: Initialization timed out after 30 seconds
+[2m2024-12-25T20:09:28.355954Z[0m [32m INFO[0m [2mbin/client.rs[0m[2m:[0m[2m107:[0m Creating STDIO transport
+[2m2024-12-25T20:09:58.357536Z[0m [31mERROR[0m [2mbin/client.rs[0m[2m:[0m[2m147:[0m Initialization timed out after 30 seconds
+[2m2024-12-25T20:10:54.091241Z[0m [32m INFO[0m [2mbin/client.rs[0m[2m:[0m[2m107:[0m Creating STDIO transport
+[2m2024-12-25T20:11:24.093830Z[0m [31mERROR[0m [2mbin/client.rs[0m[2m:[0m[2m147:[0m Initialization timed out after 30 seconds
+[2m2024-12-25T20:13:04.010473Z[0m [32m INFO[0m [2mbin/client.rs[0m[2m:[0m[2m107:[0m Creating STDIO transport
+[2m2024-12-25T20:13:34.011827Z[0m [31mERROR[0m [2mbin/client.rs[0m[2m:[0m[2m136:[0m Initialization timed out. Check server logs for issues.
+[2m2024-12-25T20:15:14.022483Z[0m [32m INFO[0m [2mbin/client.rs[0m[2m:[0m[2m107:[0m Creating STDIO transport
+[2m2024-12-25T20:15:44.025053Z[0m [31mERROR[0m [2mbin/client.rs[0m[2m:[0m[2m136:[0m Initialization timed out. Check server logs for issues.
+[2m2024-12-25T20:22:56.497959Z[0m [32m INFO[0m [2mbin/client.rs[0m[2m:[0m[2m107:[0m Creating STDIO transport
+[2m2024-12-25T20:23:26.499127Z[0m [31mERROR[0m [2mbin/client.rs[0m[2m:[0m[2m140:[0m Initialization timed out. Check server logs for issues.
+[2m2024-12-25T20:26:15.910057Z[0m [32m INFO[0m [2mbin/client.rs[0m[2m:[0m[2m107:[0m Creating STDIO transport
+[2m2024-12-25T20:26:45.911957Z[0m [31mERROR[0m [2mbin/client.rs[0m[2m:[0m[2m135:[0m Initialization timed out. Check server logs for issues.
+[2m2024-12-25T20:30:31.814783Z[0m [32m INFO[0m [2mbin/client.rs[0m[2m:[0m[2m107:[0m Creating STDIO transport
+[2m2024-12-25T20:31:01.817010Z[0m [31mERROR[0m [2mbin/client.rs[0m[2m:[0m[2m135:[0m Initialization timed out. Check server logs for issues.
+[2m2024-12-25T20:32:39.196561Z[0m [32m INFO[0m [2mbin/client.rs[0m[2m:[0m[2m162:[0m Listing resources
+[2m2024-12-25T20:32:39.205476Z[0m [31mERROR[0m [2msrc/transport/mod.rs[0m[2m:[0m[2m361:[0m Failed to receive endpoint
+[2m2024-12-25T20:32:43.705821Z[0m [32m INFO[0m [2mbin/client.rs[0m[2m:[0m[2m162:[0m Listing resources
+[2m2024-12-25T20:32:43.713607Z[0m [31mERROR[0m [2msrc/transport/mod.rs[0m[2m:[0m[2m361:[0m Failed to receive endpoint
+[2m2024-12-26T06:59:42.328368Z[0m [32m INFO[0m [2mbin/client.rs[0m[2m:[0m[2m107:[0m Creating STDIO transport
