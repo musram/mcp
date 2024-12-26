@@ -189,3 +189,28 @@ This implementation is based on the Model Context Protocol specification and ins
 
 - Issue Tracker: [GitHub Issues](https://github.com/EmilLindfors/mcp/issues)
 - Source Code: [GitHub Repository](https://github.com/EmilLindfors/mcp)
+
+
+
+
+
+###  How to check if Stdio is supported
+
+- Server startup is successful:
+```
+INFO ThreadId(01) server: 162: Enabled capabilities:
+INFO ThreadId(01) server: 163:   Logging: enabled (level: info)
+INFO ThreadId(01) server: 164:   Prompts: enabled
+INFO ThreadId(01) server: 165:   Resources: enabled
+INFO ThreadId(01) server: 166:   Tools: enabled
+```
+- Client-server communication is working:
+DEBUG ThreadId(08) mcp_rs::server: 598: Handling initialize request
+DEBUG ThreadId(08) mcp_rs::transport: 98: [Transport][Writer] >> {"jsonrpc":"2.0","id":1,"result":...}
+
+- The key improvements that fixed the issues:
+  - JSON messages are properly separated from log messages
+  - Messages starting with '{' are parsed as JSON
+  - Logs are written to stderr while JSON messages go to stdout
+  - The transport is correctly handling both client and server messages
+  - The only remaining items are some warnings about unused variables in the client code, but these don't affect functionality.

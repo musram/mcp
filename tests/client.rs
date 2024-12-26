@@ -1,43 +1,63 @@
-use futures::StreamExt;
-use reqwest::Client;
-use reqwest_eventsource::{Event, EventSource};
-use serde_json::json;
+use mcp_rs::{
+    client::{Client, ClientInfo},
+    error::McpError,
+    server::{McpServer, config::ServerConfig},
+    transport::SseTransport,
+};
+use tokio::time::Duration;
 
 #[tokio::test]
-async fn test_sse_client() {
-    // Create EventSource client
-    let url = "http://127.0.0.1:3000/events";
-    let request_builder = Client::new().get(url);
-    let mut event_source = EventSource::new(request_builder).unwrap();
+async fn test_sse_client() -> Result<(), McpError> {
+    const SERVER_HOST: &str = "127.0.0.1";
+    const SERVER_PORT: u16 = 3030;
 
-    // Send a test request using regular HTTP client
-    let client = Client::new();
-    let response = client.post("http://127.0.0.1:3000/rpc")
-        .json(&json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "resources/list",
-            "params": { "cursor": null }
-        }))
-        .send()
-        .await
-        .unwrap();
+    let server_config = ServerConfig::default();
+    let mut server = McpServer::new(server_config).await;
+    
+    let server_handle = tokio::spawn(async move {
+        server.run_sse_transport().await
+    });
 
-    println!("Response: {:?}", response.text().await.unwrap());
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
-    // Listen for SSE events
-    while let Some(event) = event_source.next().await {
-        match event {
-            Ok(Event::Message(message)) => {
-                println!("Received: {}", message.data);
-            }
-            Ok(Event::Open) => {
-                println!("Connection opened");
-            }
-            Err(error) => {
-                println!("Error: {}", error);
+    let mut client = Client::new();
+
+    // Try to connect with retries
+    let mut retries = 3;
+    let mut connected = false;
+    while retries > 0 && !connected {
+        let transport = SseTransport::new_client(SERVER_HOST.to_string(), SERVER_PORT, 32);
+        match client.connect(transport).await {
+            Ok(_) => {
+                connected = true;
                 break;
+            }
+            Err(e) => {
+                println!("Connection attempt failed: {:?}, retrying...", e);
+                retries -= 1;
+                tokio::time::sleep(Duration::from_millis(500)).await;
             }
         }
     }
+
+    if !connected {
+        server_handle.abort();
+        return Err(McpError::ConnectionClosed);
+    }
+
+    // Initialize client
+    let result = client
+        .initialize(ClientInfo {
+            name: "test-client".to_string(),
+            version: "1.0.0".to_string(),
+        })
+        .await?;
+
+    assert!(result.capabilities.resources.is_some());
+
+    // Cleanup
+    client.shutdown().await?;
+    server_handle.abort();
+
+    Ok(())
 }

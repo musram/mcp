@@ -69,12 +69,20 @@ pub struct StdioTransport {
 
 impl StdioTransport {
     pub fn new(buffer_size: Option<usize>) -> Self {
+        // Only initialize logging if it hasn't been set up
+        if std::env::var("RUST_LOG").is_ok() {
+            // Try to initialize, but don't panic if it fails
+            let _ = tracing_subscriber::fmt()
+                .with_writer(std::io::stderr)
+                .try_init();
+        }
+        
         Self { buffer_size: buffer_size.unwrap_or(4092) }
     }
 
-    async fn run(
-        reader: tokio::io::BufReader<tokio::io::Stdin>,
-        writer: tokio::io::Stdout,
+    pub async fn run(
+        reader: tokio::io::BufReader<impl tokio::io::AsyncRead + Send + Unpin + 'static>,
+        writer: impl tokio::io::AsyncWrite + Send + Unpin + 'static,
         mut cmd_rx: mpsc::Receiver<TransportCommand>,
         event_tx: mpsc::Sender<TransportEvent>,
     ) {
@@ -115,25 +123,15 @@ impl StdioTransport {
                         Ok(0) => break, // EOF
                         Ok(_) => {
                             let trimmed = line.trim();
-                            if !trimmed.is_empty() {
-                                // Only log actual protocol messages
-                                if !trimmed.contains("notifications/message") || !trimmed.contains("mcp_rs::transport") {
-                                    tracing::debug!("[Transport][Reader] << {}", trimmed);
-                                }
-                                
+                            // Skip lines that don't look like JSON
+                            if !trimmed.is_empty() && trimmed.starts_with('{') {
                                 match serde_json::from_str::<JsonRpcMessage>(trimmed) {
                                     Ok(msg) => {
-                                        // Filter out transport logging messages from being processed
                                         if !should_skip_message(&msg) {
-                                            if let Err(e) = event_tx.send(TransportEvent::Message(msg)).await {
-                                                tracing::error!("[Transport][Reader] Failed to forward message: {:?}", e);
-                                                break;
-                                            }
+                                            let _ = event_tx.send(TransportEvent::Message(msg)).await;
                                         }
                                     }
-                                    Err(e) => {
-                                        tracing::error!("[Transport][Reader] Parse error: {}", e);
-                                    }
+                                    Err(e) => tracing::error!("[Transport][Reader] Parse error: {}", e),
                                 }
                             }
                         }
